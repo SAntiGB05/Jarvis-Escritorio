@@ -1,0 +1,30 @@
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+html, body, #root { margin: 0; height: 100%; overflow: hidden; -webkit-font-smoothing: antialiased; }
+* { box-sizing: border-box; }
+a { text-decoration: none; }
+a:hover { color: #FF9A2E !important; }
+input[type=range] { accent-color: #FF9A2E; width: 100%; margin: 0; }
+::selection { background: rgba(255, 154, 46, .35); }
+button:focus-visible, [role=switch]:focus-visible { outline: 2px solid rgba(255, 154, 46, .6); outline-offset: 2px; }
+select option { background: #1E1914; color: #F2EDE6; }
+
+/* hovers del diseño (style-hover del prototipo) */
+.hov:hover { background: rgba(var(--sf), 0.06) !important; }
+.hov-card:hover { background: rgba(var(--sf), 0.05) !important; }
+.btn-primary:hover { background: #FFAD52 !important; }
+.btn-sec:hover { background: rgba(var(--sf), 0.09) !important; }
+.btn-stage:hover { background: rgba(255, 240, 220, 0.09) !important; }
+.btn-ghost:hover { color: var(--tx) !important; }
+.hov-corner:hover { background: rgba(255, 154, 46, 0.25) !important; }
+.chip-x:hover { background: rgba(255, 74, 61, 0.2) !important; color: var(--red) !important; }
+.field:focus, select:focus { border-color: #FF9A2E !important; }
+
+/* barras de desplazamiento finas, estilo macOS */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(var(--ln), 0.14); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* la barra de título se arrastra; sus controles no */
+.pywebview-drag-region { -webkit-user-select: none; user-select: none; cursor: default; }

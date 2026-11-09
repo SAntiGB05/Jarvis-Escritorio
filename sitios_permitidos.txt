@@ -1,0 +1,38 @@
+# Sitios a los que Jarvis puede entrar (uno por línea).
+#   dominio.com      → ese dominio y todos sus subdominios
+#   *.gov            → cualquier dominio que termine en .gov
+# Todo lo demás está bloqueado. Edita esta lista cuando quieras;
+# se lee de nuevo en cada consulta.
+
+# --- Enciclopedia ---
+wikipedia.org
+wikidata.org
+
+# --- Gobierno e instituciones (Colombia y otros países) ---
+*.gov.co
+*.gov
+*.gob.mx
+*.gob.es
+*.gob.ar
+*.gob.cl
+*.gob.pe
+*.gov.uk
+*.europa.eu
+*.edu
+*.edu.co
+*.int
+un.org
+who.int
+banrep.gov.co
+dane.gov.co
+ideam.gov.co
+
+# --- Clima ---
+open-meteo.com
+
+# --- Ayuda oficial de productos ---
+support.apple.com
+support.google.com
+support.spotify.com
+learn.microsoft.com
+capcut.com

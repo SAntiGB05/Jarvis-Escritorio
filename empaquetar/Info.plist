@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.jarvis.escritorio</string>
+  <key>CFBundleName</key><string>Jarvis</string>
+  <key>CFBundleDisplayName</key><string>Jarvis</string>
+  <key>CFBundleExecutable</key><string>Jarvis</string>
+  <key>CFBundleIconFile</key><string>Jarvis</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleDevelopmentRegion</key><string>es</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Jarvis escucha su palabra de activación y tus peticiones. El audio se procesa en tu Mac y nunca sale de él.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Jarvis controla Spotify, Recordatorios y el volumen cuando se lo pides.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Jarvis carga su código y sus ajustes desde la carpeta del proyecto en el Escritorio.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Jarvis carga su código y sus ajustes desde la carpeta del proyecto.</string>
+</dict>
+</plist>

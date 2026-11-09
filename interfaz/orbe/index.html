@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jarvis</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent !important; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="orb"></canvas>
+<script type="importmap">
+{ "imports": {
+    "three": "./vendor/three/build/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+const canvas = document.getElementById('orb');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
+const DPR = Math.min(window.devicePixelRatio, 2);
+renderer.setPixelRatio(DPR);
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 50);
+camera.position.set(0, 0, 3.9);
+const orb = new THREE.Group();
+scene.add(orb);
+
+const TYPE = { SHELL: 0, INNER: 1, CORE: 2, SPARK: 3, DUST: 4 };
+let P = { u: [], v: [], arc: [], rnd: [], shape: [] };
+const params = new URLSearchParams(location.search);
+const EMBED = params.has('embed');          // vista previa dentro de la ventana de ajustes
+
+function randomFrame(biasAxis = null, bias = 0) {
+  let n = new THREE.Vector3().randomDirection();
+  if (biasAxis) n.lerp(biasAxis, bias).normalize();
+  const helper = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const u = new THREE.Vector3().crossVectors(n, helper).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u).normalize();
+  return { u, v };
+}
+// Formas: 0 punto brillante · 1 anillo · 2 estrella · 3 glifo HUD
+const SHAPE = { DOT: 0, RING: 1, STAR: 2, GLYPH: 3 };
+function pickShape(weights) {            // weights: [dot, ring, star, glyph]
+  let x = Math.random(), acc = 0;
+  for (let i = 0; i < 4; i++) { acc += weights[i]; if (x < acc) return i; }
+  return 0;
+}
+function push(frame, r, angle, speed, type, shape) {
+  P.u.push(frame.u.x, frame.u.y, frame.u.z);
+  P.v.push(frame.v.x, frame.v.y, frame.v.z);
+  P.arc.push(r, angle, speed, type);
+  P.rnd.push(Math.random(), Math.random(), Math.random(), Math.random());
+  P.shape.push(shape);
+}
+// cuentas espaciadas de forma regular -> líneas punteadas tipo holograma
+function addArc(frame, r, start, len, speed, density, type, weights) {
+  const count = Math.max(3, Math.floor(len * density * r));
+  for (let i = 0; i < count; i++) {
+    push(frame, r, start + (i / count) * len, speed, type, pickShape(weights));
+  }
+}
+
+// k = densidad relativa (1 = la esfera original, ~1600 en el ajuste «Densidad»)
+function buildParticles(k) {
+P = { u: [], v: [], arc: [], rnd: [], shape: [] };
+// 1) Cáscara exterior: segmentos de arco punteados
+for (let s = 0; s < 120; s++) {
+  const f = randomFrame();
+  const r = 0.94 + Math.random() * 0.08;
+  const len = 0.25 + Math.random() ** 1.5 * 1.3;
+  const speed = (Math.random() < 0.5 ? -1 : 1) * (0.15 + Math.random() * 0.6);
+  addArc(f, r, Math.random() * Math.PI * 2, len, speed, 30 * k, TYPE.SHELL, [0.82, 0.07, 0, 0.11]);
+}
+// 2) Anillos interiores concéntricos (capas tipo giroscopio, con huecos)
+for (let layer = 0; layer < 11; layer++) {
+  const f = randomFrame(new THREE.Vector3(0, 0, 1), 0.35);
+  const r = 0.34 + Math.random() * 0.5;
+  const speed = (Math.random() < 0.5 ? -1 : 1) * (0.25 + Math.random() * 0.9);
+  const glyphLayer = layer % 4 === 0;            // algunas capas son "datos" HUD
+  let a = Math.random() * Math.PI * 2;
+  const end = a + Math.PI * 2;
+  while (a < end) {
+    const len = 0.3 + Math.random() * 1.5;
+    addArc(f, r, a, Math.min(len, end - a), speed, (glyphLayer ? 22 : 42) * k, TYPE.INNER,
+      glyphLayer ? [0.15, 0.05, 0, 0.8] : [0.85, 0.1, 0, 0.05]);
+    a += len + 0.12 + Math.random() * 0.5;
+  }
+}
+// 3) Núcleo: espiral de tres brazos + anillo central
+{
+  const f = randomFrame(new THREE.Vector3(0, 0, 1), 0.85);
+  const arms = 3, per = Math.round(240 * k);
+  for (let arm = 0; arm < arms; arm++) {
+    for (let i = 0; i < per; i++) {
+      const t = i / per;
+      const a = arm * (Math.PI * 2 / arms) + t * Math.PI * 3.2;
+      push(f, 0.04 + t * 0.36, a, 1.25, TYPE.CORE, SHAPE.DOT);
+    }
+  }
+  addArc(f, 0.13, 0, Math.PI * 2, -1.8, 160 * k, TYPE.CORE, [0.7, 0.3, 0, 0]);
+}
+// 4) Chispas: estrellas que nacen dentro y viajan hacia fuera
+for (let i = 0; i < Math.round(420 * k); i++) {
+  const f = randomFrame();
+  push(f, 0.5 + Math.random() * 0.75, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.8,
+       TYPE.SPARK, Math.random() < 0.65 ? SHAPE.STAR : SHAPE.DOT);
+}
+// 5) Polvo / halo exterior
+for (let i = 0; i < Math.round(500 * k); i++) {
+  const f = randomFrame();
+  push(f, 1.08 + Math.random() ** 2 * 0.55, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.3,
+       TYPE.DUST, SHAPE.DOT);
+}
+
+const count = P.arc.length / 4;
+const g = new THREE.BufferGeometry();
+g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(count * 3), 3));
+g.setAttribute('aU', new THREE.Float32BufferAttribute(P.u, 3));
+g.setAttribute('aV', new THREE.Float32BufferAttribute(P.v, 3));
+g.setAttribute('aArc', new THREE.Float32BufferAttribute(P.arc, 4));
+g.setAttribute('aRand', new THREE.Float32BufferAttribute(P.rnd, 4));
+g.setAttribute('aShape', new THREE.Float32BufferAttribute(P.shape, 1));
+g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 3);
+return g;
+}
+let geo = buildParticles(1);
+
+const NOISE = /* glsl */`
+vec3 mod289(vec3 x){return x-floor(x*(1./289.))*289.;}
+vec4 mod289(vec4 x){return x-floor(x*(1./289.))*289.;}
+vec4 permute(vec4 x){return mod289(((x*34.)+1.)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1./6.,1./3.); const vec4 D=vec4(0.,.5,1.,2.);
+  vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.-g; vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy;
+  i=mod289(i);
+  vec4 p=permute(permute(permute(i.z+vec4(0.,i1.z,i2.z,1.))+i.y+vec4(0.,i1.y,i2.y,1.))+i.x+vec4(0.,i1.x,i2.x,1.));
+  float n_=.142857142857; vec3 ns=n_*D.wyz-D.xzx;
+  vec4 j=p-49.*floor(p*ns.z*ns.z); vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.*x_);
+  vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.+1.; vec4 s1=floor(b1)*2.+1.; vec4 sh=-step(h,vec4(0.));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x; p1*=norm.y; p2*=norm.z; p3*=norm.w;
+  vec4 m=max(.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.); m=m*m;
+  return 42.*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}`;
+
+const vertexShader = /* glsl */`
+uniform float uTime, uSpinPhase, uSwirlPhase, uNoisePhase;
+uniform float uAmp, uAudio, uError, uListen, uScale, uSize, uPixelRatio;
+uniform float uDoneT, uDoneAmt, uBright, uBlue;
+uniform vec3 uDeep, uMid, uPale, uDDeep, uDMid, uDPale;
+attribute vec3 aU, aV;
+attribute vec4 aArc, aRand;
+attribute float aShape;
+varying vec3 vColor;
+varying float vAlpha, vShape, vRot;
+${NOISE}
+
+vec3 rotY(vec3 p, float a){ float c=cos(a), s=sin(a); return vec3(c*p.x+s*p.z, p.y, -s*p.x+c*p.z); }
+
+void main(){
+  float type = aArc.w;
+  float isSpark = step(2.5, type) * step(type, 3.5);
+  float isCore  = step(1.5, type) * step(type, 2.5);
+  float isDust  = step(3.5, type);
+
+  // chispas: ciclo de vida, nacen cerca del centro y salen disparadas
+  float life = fract(aRand.z + uTime * (0.05 + aRand.x * 0.07));
+  float radius = mix(aArc.x, aArc.x * (0.15 + 0.95 * life), isSpark);
+
+  float ang = aArc.y + uSpinPhase * aArc.z;
+  vec3 N = cross(aU, aV);
+  vec3 p = radius * (cos(ang) * aU + sin(ang) * aV);
+
+  // micro-órbita: cada partícula "baila" alrededor de su sitio
+  float w = uTime * (0.8 + aRand.x * 1.6) + aRand.w * 30.0;
+  p += (N * sin(w) + aU * cos(w * 1.3)) * 0.012 * (1.0 - isCore);
+
+  // vórtice: lo interior gira más que lo exterior
+  float r0 = length(p);
+  p = rotY(p, uSwirlPhase * (1.15 - r0));
+  vec3 dir = normalize(p + 1e-5);
+
+  // ondulación orgánica (ruido + ola de latitud)
+  float n = snoise(p * 1.7 + vec3(0.0, uNoisePhase, uNoisePhase * 0.5));
+  float wave = sin(dir.y * 5.0 + uNoisePhase * 2.2 + n * 2.0);
+  p += dir * (n * uAmp + wave * uAmp * 0.6) * (0.4 + r0);
+
+  // HABLAR: ondas desde el centro + bandas de ecualizador + núcleo que late
+  float lr = length(p);
+  float ripple = sin(lr * 13.0 - uTime * 11.0);
+  float band = 0.5 + 0.5 * sin(atan(dir.z, dir.x) * 6.0 + dir.y * 5.0 + uTime * 4.0);
+  float band2 = 0.5 + 0.5 * sin(dir.y * 9.0 - uTime * 6.0 + n * 3.0);
+  p += dir * uAudio * (0.13 * ripple + 0.34 * band * band2 * lr + 0.08 * n);
+  p *= 1.0 + uAudio * 0.45 * isCore;
+
+  // escuchar: respiración que se contrae hacia dentro
+  p *= 1.0 - uListen * 0.05 * (0.5 + 0.5 * sin(uTime * 3.2 - lr * 7.0));
+
+  // error: glitch por bandas + temblor
+  float slice = floor(p.y * 12.0);
+  float g = step(0.86, fract(sin(floor(uTime * 13.0) * 12.9898 + slice * 78.233) * 43758.5453));
+  p.x += g * uError * 0.22 * (aRand.y - 0.5) * 2.0;
+  p += (aRand.xyz - 0.5) * uError * 0.06 * (0.5 + 0.5 * sin(uTime * 45.0 + aRand.w * 60.0));
+
+  // completado: onda de choque expansiva
+  float front = uDoneT * 1.5;
+  float shock = exp(-pow((lr - front) * 10.0, 2.0)) * uDoneAmt;
+  p += dir * shock * 0.18;
+
+  p *= uScale;
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  gl_Position = projectionMatrix * mv;
+
+  // pulso de luz que recorre cada arco (como datos viajando)
+  float seed = aArc.z * 7.31 + aArc.x * 3.7;
+  float head = fract(aArc.y * 0.318 - uTime * 0.45 * sign(aArc.z + 1e-4) + seed);
+  float runner = pow(head, 14.0) * (1.0 - isSpark - isDust);
+
+  // tamaño por forma
+  float size = 0.75 + aRand.y * 0.6;
+  if (aShape > 0.5 && aShape < 1.5) size *= 2.3;           // anillo
+  else if (aShape > 1.5 && aShape < 2.5) size *= 3.2;      // estrella
+  else if (aShape > 2.5) size *= 1.8;                      // glifo
+  if (aRand.y > 0.975 && aShape < 0.5) size *= 1.7;         // nodos brillantes
+  size *= mix(1.0, 0.55, isDust);
+  size *= mix(1.0, 0.4 + sin(life * 3.14159), isSpark);
+  size *= 1.0 + runner * 1.3 + shock * 1.2 + uAudio * 0.6 * band;
+  gl_PointSize = uSize * size * uPixelRatio / -mv.z;
+
+  // color: naranja profundo -> dorado -> dorado pálido
+  float t = aRand.z;
+  vec3 deep = uDeep, gold = uMid, pale = uPale;
+  vec3 col = t < 0.5 ? mix(deep, gold, t * 2.0) : mix(gold, pale, (t - 0.5) * 2.0);
+  // paleta azul (completado)
+  vec3 bDeep = uDDeep, bMid = uDMid, bPale = uDPale;
+  vec3 blue = t < 0.5 ? mix(bDeep, bMid, t * 2.0) : mix(bMid, bPale, (t - 0.5) * 2.0);
+  col = mix(col, blue, uBlue);
+  col = mix(col, mix(pale, bPale, uBlue), isCore * 0.3 + runner * 0.6);
+  col = mix(col, vec3(1.0, 0.03, 0.01), uError);
+  col = mix(col, mix(mix(pale, vec3(1.0), 0.5), mix(bPale, vec3(1.0), 0.3), uBlue), clamp(shock * 0.6, 0.0, 0.6));
+  vColor = col;
+
+  // brillo / parpadeo
+  float tw = 0.5 + 0.5 * sin(uTime * (1.0 + aRand.z * 4.0) + aRand.w * 40.0);
+  float a = 0.6 + 0.4 * tw;
+  a = mix(a, sin(life * 3.14159) * (0.6 + 0.4 * tw), isSpark);
+  a *= mix(1.0, 0.3, isDust);
+  a *= mix(1.0, 0.6, isCore);
+  if (aShape > 2.5) a *= 0.35 + 0.65 * step(0.35, fract(uTime * (0.5 + aRand.x) + aRand.w)); // glifos parpadean como datos
+  a *= 0.7 + 0.3 * smoothstep(-1.0, 1.0, dir.z);          // profundidad
+  a *= 1.0 + runner * 2.2;
+  float flicker = 1.0 - uError * 0.5 * step(0.7, fract(sin(floor(uTime * 20.0) * 91.7) * 4375.5));
+  vAlpha = a * uBright * flicker * (1.0 + shock * 0.8);
+
+  vShape = aShape;
+  vRot = aRand.w * 6.2832 + uTime * (aRand.x - 0.5) * 1.5;
+}`;
+
+const fragmentShader = /* glsl */`
+varying vec3 vColor;
+varying float vAlpha, vShape, vRot;
+void main(){
+  vec2 uv = gl_PointCoord - 0.5;
+  float c = cos(vRot), s = sin(vRot);
+  uv = mat2(c, -s, s, c) * uv;
+  float d = length(uv);
+  float a;
+  if (vShape < 0.5) {
+    // punto con núcleo caliente + halo
+    a = pow(smoothstep(0.5, 0.0, d), 2.2) + smoothstep(0.14, 0.0, d) * 0.9;
+  } else if (vShape < 1.5) {
+    // anillo fino con centro
+    a = smoothstep(0.05, 0.0, abs(d - 0.33)) * 0.9 + smoothstep(0.09, 0.0, d) * 0.7
+      + pow(smoothstep(0.5, 0.0, d), 3.0) * 0.3;
+  } else if (vShape < 2.5) {
+    // estrella de 4 puntas (destello)
+    vec2 q = abs(uv);
+    float rays = smoothstep(0.035, 0.0, q.x) * smoothstep(0.5, 0.0, q.y)
+               + smoothstep(0.035, 0.0, q.y) * smoothstep(0.5, 0.0, q.x);
+    a = rays + smoothstep(0.12, 0.0, d) + pow(smoothstep(0.5, 0.0, d), 3.0) * 0.4;
+  } else {
+    // glifo HUD: marco cuadrado con punto central
+    vec2 q = abs(uv);
+    float m = max(q.x, q.y);
+    a = (smoothstep(0.30, 0.27, m) - smoothstep(0.22, 0.19, m)) * 0.9 + smoothstep(0.08, 0.0, d) * 0.8;
+  }
+  gl_FragColor = vec4(vColor, clamp(a, 0.0, 1.5) * vAlpha * 0.40);
+}`;
+
+const uniforms = {
+  uTime: { value: 0 }, uSpinPhase: { value: 0 }, uSwirlPhase: { value: 0 }, uNoisePhase: { value: 0 },
+  uAmp: { value: 0.04 }, uAudio: { value: 0 }, uError: { value: 0 }, uListen: { value: 0 },
+  uScale: { value: 1 }, uSize: { value: 15 }, uPixelRatio: { value: DPR },
+  uDoneT: { value: 10 }, uDoneAmt: { value: 0 }, uBright: { value: 1 }, uBlue: { value: 0 },
+  uDeep: { value: new THREE.Vector3() }, uMid: { value: new THREE.Vector3() }, uPale: { value: new THREE.Vector3() },
+  uDDeep: { value: new THREE.Vector3() }, uDMid: { value: new THREE.Vector3() }, uDPale: { value: new THREE.Vector3() },
+};
+
+// Ajustes de la ventana «Orbe» (data/orb.json). Llegan con jarvis.setConfig().
+const PALETTES = {
+  dorado:    [[1, 0.28, 0.02], [1, 0.52, 0.06], [1, 0.8, 0.45]],
+  azul:      [[0, 0.12, 1], [0.02, 0.38, 1], [0.25, 0.68, 1]],
+  esmeralda: [[0, 0.4, 0.18], [0.05, 0.78, 0.45], [0.55, 1, 0.75]],
+  violeta:   [[0.32, 0.02, 1], [0.6, 0.25, 1], [0.88, 0.7, 1]],
+  plata:     [[0.4, 0.45, 0.55], [0.72, 0.77, 0.86], [1, 1, 1]],
+};
+const cfg = { palette: 'dorado', size: 1, count: 1600, speed: 1, glow: 1, turb: 1 };
+function applyPalette() {
+  const pal = PALETTES[cfg.palette] || PALETTES.dorado;
+  const done = cfg.palette === 'azul' ? PALETTES.dorado : PALETTES.azul;   // «completado» siempre contrasta
+  [['uDeep', pal[0]], ['uMid', pal[1]], ['uPale', pal[2]], ['uDDeep', done[0]], ['uDMid', done[1]], ['uDPale', done[2]]]
+    .forEach(([k, c]) => uniforms[k].value.set(c[0], c[1], c[2]));
+}
+applyPalette();
+// Las partículas se dibujan en píxeles: escalar con la ventana para que en
+// la ventanita flotante no se amontonen (era la causa del exceso de brillo).
+function sizeForWindow() { return 19 * Math.min(1, Math.max(0.42, Math.min(innerWidth, innerHeight) / 560)); }
+uniforms.uSize.value = sizeForWindow();
+const material = new THREE.ShaderMaterial({
+  uniforms, vertexShader, fragmentShader,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const points = new THREE.Points(geo, material);
+orb.add(points);
+
+function setConfig(c) {
+  if (!c || typeof c !== 'object') return;
+  for (const k of Object.keys(cfg)) if (c[k] !== undefined) cfg[k] = k === 'palette' ? String(c[k]) : (+c[k] || 0);
+  cfg.count = Math.max(400, Math.min(3000, cfg.count || 1600));
+  applyPalette();
+  const k = cfg.count / 1600;
+  if (Math.abs(k - (points.userData.k || 1)) > 0.01) {
+    const old = points.geometry;
+    points.geometry = buildParticles(k);
+    points.userData.k = k;
+    old.dispose();
+  }
+}
+
+
+// Bloom con fondo transparente: el render target conserva el alfa.
+const rt = new THREE.WebGLRenderTarget(innerWidth * DPR, innerHeight * DPR, { type: THREE.HalfFloatType, format: THREE.RGBAFormat });
+const composer = new EffectComposer(renderer, rt);
+composer.setSize(innerWidth, innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.25, 0.2);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+// Fondo realmente transparente: el alfa de cada píxel = su brillo (salida
+// premultiplicada). Sin esto el resplandor dejaba un velo en todo el cuadrado.
+composer.addPass(new ShaderPass({
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+    void main(){
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      // Alfa = brillo del píxel (premultiplicado válido: rgb <= alfa). Sobre
+      // cualquier fondo se ve como luz: no oscurece ni deja un cuadro.
+      c *= smoothstep(0.10, 0.28, max(c.r, max(c.g, c.b)));   // borra el velo tenue del bloom (ya en sRGB)
+      c *= 1.0 - smoothstep(0.40, 0.50, length(vUv - 0.5));   // desvanecido circular: nunca un borde cuadrado
+      float a = max(c.r, max(c.g, c.b));
+      gl_FragColor = vec4(c, a);
+    }`,
+}));
+
+const STATES = {
+  idle:      { label: 'En espera',  amp: 0.035, spin: 0.25, swirl: 0.10, noise: 0.25, bright: 0.9,  scale: 1.00, listen: 0, error: 0, bloom: 1.0, blue: 0 },
+  listening: { label: 'Escuchando', amp: 0.025, spin: 0.15, swirl: 0.05, noise: 0.35, bright: 1.05, scale: 0.93, listen: 1, error: 0, bloom: 1.15, blue: 0 },
+  thinking:  { label: 'Pensando',   amp: 0.07,  spin: 2.30, swirl: 1.70, noise: 1.10, bright: 1.15, scale: 0.97, listen: 0, error: 0, bloom: 1.3, blue: 0 },
+  speaking:  { label: 'Hablando',   amp: 0.06,  spin: 0.75, swirl: 0.35, noise: 0.80, bright: 1.1,  scale: 1.00, listen: 0, error: 0, bloom: 1.25, blue: 0 },
+  error:     { label: 'Error',      amp: 0.11,  spin: 0.08, swirl: 0.00, noise: 1.60, bright: 0.95, scale: 1.02, listen: 0, error: 1, bloom: 1.25, blue: 0 },
+  done:      { label: 'Completado', amp: 0.03,  spin: 0.45, swirl: 0.15, noise: 0.30, bright: 0.95, scale: 1.00, listen: 0, error: 0, bloom: 1.1, blue: 1 },
+};
+const cur = { ...STATES.idle };
+let state = 'idle';
+let externalLevel = 0, externalUntil = 0;
+function setAudioLevel(v) { externalLevel = Math.max(0, Math.min(1, +v || 0)); externalUntil = performance.now() + 300; }
+function simulatedVoice(t) {
+  const syll = Math.max(0, Math.sin(t * 11.5 + Math.sin(t * 2.7) * 2.4)) ** 0.7;
+  const accent = 0.6 + 0.4 * Math.max(0, Math.sin(t * 3.1 + Math.sin(t * 0.9) * 3));
+  const phrase = Math.sin(t * 0.55) > -0.75 ? 1 : 0.15;     // pausas entre frases
+  return Math.min(1, syll * accent * phrase * 1.15);
+}
+
+
+function setState(name) {
+  if (!STATES[name]) return;
+  state = name;
+  if (name === 'done') { uniforms.uDoneT.value = 0; uniforms.uDoneAmt.value = 1; }
+}
+
+const clock = new THREE.Clock();
+let audioSmooth = 0;
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+  const target = STATES[state];
+  const k = 1 - Math.exp(-dt * 3.0), kf = 1 - Math.exp(-dt * 5.0);
+  for (const key of ['amp','spin','swirl','noise','bright','scale','listen','error','bloom','blue'])
+    cur[key] += (target[key] - cur[key]) * (key === 'error' || key === 'blue' ? kf : k);
+  const stutter = cur.error > 0.5 ? (Math.sin(t * 9) > 0.3 ? 1 : -0.4) : 1;
+  uniforms.uSpinPhase.value += dt * cur.spin * stutter * cfg.speed;
+  uniforms.uSwirlPhase.value += dt * cur.swirl * cfg.speed;
+  uniforms.uNoisePhase.value += dt * cur.noise * Math.max(0.3, cfg.turb);
+  uniforms.uTime.value = t;
+  let level = 0;
+  if (performance.now() < externalUntil) level = externalLevel;
+  else if (state === 'speaking') level = simulatedVoice(t);
+  audioSmooth += (level - audioSmooth) * (1 - Math.exp(-dt * (level > audioSmooth ? 18 : 7)));
+  uniforms.uAudio.value = audioSmooth;
+  uniforms.uAmp.value = cur.amp * cfg.turb;
+  uniforms.uBright.value = cur.bright * cfg.glow * (state === 'thinking' ? 0.9 + 0.1 * Math.sin(t * 6) : 1);
+  // En la esfera flotante el tamaño lo da la ventana; en la vista previa, el shader.
+  uniforms.uScale.value = cur.scale * (EMBED ? cfg.size : 1) * (1 + 0.012 * Math.sin(t * 1.4)) * (1 + audioSmooth * 0.1);
+  uniforms.uListen.value = cur.listen;
+  uniforms.uError.value = cur.error;
+  uniforms.uBlue.value = cur.blue;
+  uniforms.uDoneT.value += dt;
+  uniforms.uDoneAmt.value *= Math.exp(-dt * 0.9);
+  bloom.strength = (0.35 * cur.bloom + audioSmooth * 0.3 + uniforms.uDoneAmt.value * 0.2) * Math.min(1.4, cfg.glow);
+  orb.rotation.y += dt * 0.06;
+  composer.render();
+  requestAnimationFrame(tick);
+}
+tick();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  uniforms.uSize.value = sizeForWindow();
+});
+
+window.jarvis = { setState, setAudioLevel, setConfig };
+// Vista previa embebida (iframe en Ajustes): recibe órdenes por postMessage.
+addEventListener('message', ev => {
+  const m = ev.data || {};
+  if (m.type === 'state') setState(m.state);
+  else if (m.type === 'config') setConfig(m.config);
+  else if (m.type === 'level') setAudioLevel(m.level);
+});
+// Doble clic: desactiva a Jarvis y descarta la petición (respaldo del monitor nativo).
+addEventListener('dblclick', () => {
+  try { window.pywebview && window.pywebview.api && window.pywebview.api.doble_clic(); } catch (e) {}
+});
+const initial = params.get('state');
+if (initial) { Object.assign(cur, STATES[initial] || {}); setState(initial); }
+</script>
+</body>
+</html>
