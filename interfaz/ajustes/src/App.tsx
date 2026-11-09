@@ -47,13 +47,14 @@ export function App({ api, config }: { api: Api; config: Config }) {
   useEffect(() => {
     refreshStatus();
     const id = window.setInterval(() => { if (document.visibilityState !== 'hidden') refreshStatus(); }, 5000);
-    window.jarvisAjustes = {
-      refresh: () => {
-        refreshStatus();
-        api.get_config().then(c => { setSites(c.sites); setOrbState_(c.orb); });
-      },
+    const refresh = () => {
+      refreshStatus();
+      api.get_config().then(c => { setSites(c.sites); setOrbState_(c.orb); });
     };
-    return () => window.clearInterval(id);
+    window.jarvisAjustes = { refresh };
+    // Al volver a mostrar la ventana (Python no le pide nada: evita bloqueos).
+    window.addEventListener('focus', refresh);
+    return () => { window.clearInterval(id); window.removeEventListener('focus', refresh); };
   }, [api, refreshStatus]);
 
   // ---- orbe: estado de la vista previa ----

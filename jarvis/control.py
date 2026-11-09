@@ -875,34 +875,45 @@ class Aplicacion:
                 log.debug("apariencia: %s", e)
         _main(aplicar)
 
+    # OJO: show/hide/destroy/evaluate_js de pywebview esperan a eventos que
+    # produce el hilo principal; llamadas DESDE él (menú, Apple Events) se
+    # quedaban bloqueadas para siempre. Aquí solo AppKit nativo, sin esperas.
+    # La página se refresca sola al recibir el foco.
+
     def mostrar_ajustes(self, *_):
         def aplicar():
             import AppKit
-            AppKit.NSApplication.sharedApplication().setActivationPolicy_(0)   # icono en el Dock
-            self.win.show()
-            self.win.native.makeKeyAndOrderFront_(None)
-            AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            app = AppKit.NSApplication.sharedApplication()
+            w = self.win.native
+            if w is None:
+                return
+            app.setActivationPolicy_(0)                    # icono en el Dock mientras está abierta
+            if w.isMiniaturized():
+                w.deminiaturize_(None)
+            w.makeKeyAndOrderFront_(None)
+            app.activateIgnoringOtherApps_(True)
             self.visible = True
         _main(aplicar)
-        self.win.evaluate_js("window.jarvisAjustes && window.jarvisAjustes.refresh()")
 
     def ocultar_ajustes(self, *_):
         self.api.mic_stop()
         self.api.preview_orb(None)
-        try:
+
+        def aplicar():
             import AppKit
-            self.win.hide()
+            if self.win.native is not None:
+                self.win.native.orderOut_(None)
             AppKit.NSApplication.sharedApplication().setActivationPolicy_(1)   # sin Dock
-        except Exception:
-            pass
+        _main(aplicar)
         self.visible = False
 
     def actualizar_titulo(self):
         nombre = env_para_ui()["assistantName"]
-        try:
-            self.win.set_title(f"{nombre} — Ajustes")
-        except Exception:
-            pass
+
+        def aplicar():
+            if self.win.native is not None:
+                self.win.native.setTitle_(f"{nombre} — Ajustes")
+        _main(aplicar)
         self.actualizar_menu()
 
     # ---- barra de menús ----
@@ -925,9 +936,16 @@ class Aplicacion:
                 threading.Thread(target=lambda: (app.motor.reiniciar(), app.actualizar_menu()), daemon=True).start()
 
             def salir_(self, sender):
-                app.salir()
+                threading.Thread(target=app.salir, daemon=True).start()   # no congelar el menú
+
+            def reabrir_conRespuesta_(self, event, reply):
+                # Clic en el icono (Dock, Finder, Spotlight) con la app ya abierta.
+                app.mostrar_ajustes()
 
         self._menu_target = Destino.alloc().init()
+        # macOS no lanza otra copia si ya está abierta: manda «reabrir» (aevt/rapp).
+        AppKit.NSAppleEventManager.sharedAppleEventManager().setEventHandler_andSelector_forEventClass_andEventID_(
+            self._menu_target, "reabrir:conRespuesta:", _fourcc("aevt"), _fourcc("rapp"))
         bar = AppKit.NSStatusBar.systemStatusBar()
         self._status = bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
         img = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_("circle.hexagongrid.circle", "Jarvis")
@@ -988,19 +1006,16 @@ class Aplicacion:
                 log.exception("vigilancia")
 
     def salir(self):
+        """Llamar fuera del hilo principal (detener el motor tarda unos segundos)."""
         if self.saliendo:
             return
         self.saliendo = True
         log.info("saliendo")
         self.api.mic_stop()
+        self.api.preview_orb(None)
         self.motor.detener()
-
-        def cerrar():
-            try:
-                self.win.destroy()
-            except Exception:
-                os._exit(0)
-        _main(cerrar)
+        logging.shutdown()
+        os._exit(0)          # sin pasar por pywebview: su cierre puede esperar al hilo principal
 
     def arrancar(self, abrir: bool):
         def al_iniciar():
