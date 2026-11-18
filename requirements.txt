@@ -5,3 +5,5 @@ numpy
 pywebview>=5.0
 pyobjc-framework-Cocoa
 pyobjc-framework-ApplicationServices
+pyobjc-framework-Security
+pyobjc-framework-Quartz

@@ -19,7 +19,7 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>Jarvis escucha su palabra de activación y tus peticiones. El audio se procesa en tu Mac y nunca sale de él.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Jarvis controla Spotify, Recordatorios y el volumen cuando se lo pides.</string>
+  <string>Jarvis controla Spotify, Recordatorios, Calendario, Notas, Terminal y el volumen cuando se lo pides.</string>
   <key>NSDesktopFolderUsageDescription</key>
   <string>Jarvis carga su código y sus ajustes desde la carpeta del proyecto en el Escritorio.</string>
   <key>NSDocumentsFolderUsageDescription</key>

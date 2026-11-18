@@ -1,0 +1,13 @@
+{
+  "id": "sistema",
+  "nombre": "Control del sistema",
+  "descripcion": "Brillo, bloquear la pantalla y batería",
+  "riesgo": "escritura",
+  "por_defecto": true,
+  "herramientas": ["brillo", "bloquear_pantalla", "bateria"],
+  "escritura": ["bloquear_pantalla"],
+  "confirmacion": [],
+  "no_confiables": [],
+  "permisos_macos": ["accessibility"],
+  "dominios": []
+}

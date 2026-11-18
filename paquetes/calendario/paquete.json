@@ -1,0 +1,13 @@
+{
+  "id": "calendario",
+  "nombre": "Calendario y Notas",
+  "descripcion": "Consulta tu agenda, crea eventos (con doble clic) y dicta notas",
+  "riesgo": "escritura",
+  "por_defecto": true,
+  "herramientas": ["agenda", "crear_evento", "crear_nota"],
+  "escritura": ["crear_evento", "crear_nota"],
+  "confirmacion": ["crear_evento"],
+  "no_confiables": ["agenda"],
+  "permisos_macos": ["automation:com.apple.iCal", "automation:com.apple.Notes"],
+  "dominios": []
+}

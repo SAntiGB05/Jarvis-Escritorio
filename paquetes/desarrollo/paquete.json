@@ -1,0 +1,17 @@
+{
+  "id": "desarrollo",
+  "nombre": "Desarrollo",
+  "descripcion": "Proyectos, git, puertos, tests y delegación a Claude Code",
+  "riesgo": "escritura",
+  "por_defecto": true,
+  "herramientas": ["auditar_dependencias", "delegar_a_claude_code", "puerto_en_uso",
+                   "liberar_puerto", "iniciar_proyecto", "ejecutar_tests",
+                   "git_estado", "git_pull", "git_rama", "estado_sistema", "brew_pendientes",
+                   "listar_proyectos"],
+  "escritura": ["delegar_a_claude_code", "liberar_puerto", "iniciar_proyecto", "ejecutar_tests",
+                "git_pull", "git_rama"],
+  "confirmacion": ["delegar_a_claude_code", "liberar_puerto", "git_pull", "git_rama"],
+  "no_confiables": [],
+  "permisos_macos": ["automation:com.apple.Terminal"],
+  "dominios": []
+}

@@ -17,6 +17,12 @@ Herramientas:
   buscar_wikipedia, leer_pagina   — internet SOLO en sitios de sitios_permitidos.txt
   clima                           — open-meteo para tu ubicación fija
   abrir_ajustes                   — abre la ventana de ajustes de la app
+  programar_aviso                 — Jarvis lo dice en voz alta a la hora indicada
+  registrar_limite                — anota lo que no pudo hacer (métricas del panel)
+
+Además, las herramientas de los PAQUETES activos (paquetes/<id>/herramientas.py).
+Qué paquetes se cargan lo decide el anfitrión al arrancar (`--paquetes a,b` en
+cerebro/mcp.json, generado por cerebro.py), nunca el modelo.
 """
 from __future__ import annotations
 
@@ -118,7 +124,10 @@ _SPOTIFY_TYPES = {"cancion": "track", "canción": "track", "track": "track",
 
 
 def _spotify_token() -> str | None:
-    cid, secret = os.getenv("SPOTIFY_CLIENT_ID", "").strip(), os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+    import comun
+    # El secreto vive en el Llavero (plan, punto 19); .env queda como respaldo.
+    cid = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
+    secret = comun.secreto_leer("SPOTIFY_CLIENT_SECRET") or os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
     if not cid or not secret:
         return None
     req = urllib.request.Request(
@@ -361,27 +370,61 @@ end run'''
     return True, f"Recordatorio «{titulo}» creado."
 
 
-def listar_recordatorios(args: dict) -> tuple[bool, str]:
-    script = '''set out to ""
+LISTAR_RECORDATORIOS = '''set out to ""
 tell application "Reminders"
   set rs to (reminders whose completed is false)
   set c to 0
   repeat with r in rs
     set c to c + 1
-    if c > 15 then exit repeat
-    set line_ to name of r
+    if c > 30 then exit repeat
+    set fecha to ""
     try
       set dd to due date of r
-      if dd is not missing value then set line_ to line_ & " — " & (dd as string)
+      if dd is not missing value then set fecha to (dd as «class isot» as string)
     end try
-    set out to out & line_ & linefeed
+    set lista to ""
+    try
+      set lista to name of container of r
+    end try
+    set out to out & (name of r) & tab & fecha & tab & lista & linefeed
   end repeat
 end tell
 return out'''
-    ok, out = _osascript(script, timeout=30)
+
+
+def recordatorios_pendientes() -> list[dict] | str:
+    """[{titulo, fecha (ISO o ""), lista}] o el texto del error."""
+    ok, out = _osascript(LISTAR_RECORDATORIOS, timeout=30)
     if not ok:
-        return False, out
-    return True, out or "No tienes recordatorios pendientes."
+        return out
+    res = []
+    for linea in out.splitlines():
+        partes = (linea.split("\t") + ["", ""])[:3]
+        if partes[0].strip():
+            res.append({"titulo": partes[0].strip(), "fecha": partes[1].strip(), "lista": partes[2].strip()})
+    res.sort(key=lambda r: r["fecha"] or "9999")
+    return res
+
+
+def _cuando(iso: str) -> str:
+    try:
+        d = datetime.fromisoformat(iso)
+    except ValueError:
+        return ""
+    hoy = datetime.now().date()
+    dia = {0: "hoy", 1: "mañana"}.get((d.date() - hoy).days, d.strftime("%d/%m"))
+    return f"{dia} a las {d.strftime('%H:%M')}"
+
+
+def listar_recordatorios(args: dict) -> tuple[bool, str]:
+    rs = recordatorios_pendientes()
+    if isinstance(rs, str):
+        return False, rs
+    if not rs:
+        return True, "No tienes recordatorios pendientes."
+    lineas = [f"- «{r['titulo']}»" + (f", {_cuando(r['fecha'])}" if r["fecha"] else ", sin fecha") for r in rs[:15]]
+    return True, (f"Recordatorios pendientes en la app Recordatorios ({len(rs)}). Cada línea es el "
+                  "TÍTULO que escribió el usuario y su fecha:\n" + "\n".join(lineas))
 
 
 def volumen(args: dict) -> tuple[bool, str]:
@@ -460,9 +503,43 @@ class _SoloPermitidos(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_SoloPermitidos)
 
 
-def _get(url: str, timeout: float = 10) -> tuple[bytes, str]:
+MAX_QUERY = 200                                  # caracteres del query string (URLs del modelo)
+_B64_RE = _re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}")
+
+
+def _parece_datos(valor: str) -> bool:
+    """¿Un trozo largo con pinta de base64/hex (datos codificados), no de palabras?"""
+    for m in _B64_RE.finditer(valor):
+        t = m.group()
+        mezcla = sum([any(c.isupper() for c in t), any(c.islower() for c in t), any(c.isdigit() for c in t)])
+        if (mezcla >= 3 or _re.fullmatch(r"[0-9a-fA-F]{32,}", t)) and t.count("-") < 3:
+            return True
+    return False
+
+
+def url_sospechosa(url: str) -> str | None:
+    """Reglas del punto 4: una URL que elige el modelo no puede llevar datos.
+    Devuelve el motivo del rechazo o None."""
+    p = urllib.parse.urlparse(url)
+    if len(p.query) > MAX_QUERY:
+        return f"la dirección lleva demasiados parámetros (más de {MAX_QUERY} caracteres)"
+    valores = [v for _, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True)]
+    valores += [urllib.parse.unquote(seg) for seg in p.path.split("/") if seg]
+    valores.append(urllib.parse.unquote(p.fragment))
+    if any(_parece_datos(v) for v in valores):
+        return "la dirección lleva un parámetro con aspecto de datos codificados"
+    return None
+
+
+def _get(url: str, timeout: float = 10, del_modelo: bool = False) -> tuple[bytes, str]:
+    """GET a un sitio de la lista. `del_modelo=True` cuando la URL la eligió
+    Claude (leer_pagina): entonces también se aplican las reglas anti-exfiltración."""
     if not sitio_permitido(url):
         raise PermissionError(f"Sitio no permitido: {urllib.parse.urlparse(url).hostname or url}")
+    if del_modelo:
+        motivo = url_sospechosa(url)
+        if motivo:
+            raise PermissionError(f"Bloqueada: {motivo}")
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "es,en;q=0.7"})
     with _opener.open(req, timeout=timeout) as r:
         data = r.read(MAX_BYTES + 1)[:MAX_BYTES]
@@ -505,9 +582,9 @@ def leer_pagina(args: dict) -> tuple[bool, str]:
     if url and "://" not in url:
         url = "https://" + url
     try:
-        data, ctype = _get(url)
+        data, ctype = _get(url, del_modelo=True)
     except PermissionError as e:
-        return False, f"{e}. Solo puedo entrar a sitios oficiales de la lista."
+        return False, f"{e}. Solo puedo entrar a sitios oficiales de la lista, sin datos en la dirección."
     except Exception as e:
         return False, f"No pude leer la página: {e}"
     text = data.decode("utf-8", errors="replace")
@@ -589,6 +666,41 @@ def abrir_ajustes(args: dict) -> tuple[bool, str]:
     return True, "Ajustes abiertos."
 
 
+def programar_aviso(args: dict) -> tuple[bool, str]:
+    """Lo guarda en data/avisos_programados.json; el motor lo dice en voz alta
+    a esa hora (respetando No molestar y el horario de silencio)."""
+    import comun
+    texto = str(args.get("texto", "")).strip()[:300]
+    cuando = str(args.get("fecha_hora", "")).strip()
+    if not texto:
+        return False, "Falta qué tengo que decirte."
+    try:
+        d = datetime.fromisoformat(cuando)
+    except ValueError:
+        return False, "fecha_hora debe ir en formato ISO, por ejemplo 2026-11-07T17:30."
+    if d.timestamp() < time.time() - 60:
+        return False, "Esa hora ya pasó."
+    lista = comun.leer_json(rutas.AVISOS_PROGRAMADOS, [])
+    lista = [a for a in lista if isinstance(a, dict)][-200:]
+    lista.append({"id": os.urandom(6).hex(), "texto": texto, "ts": d.timestamp(), "creado": time.time()})
+    comun.escribir_json(rutas.AVISOS_PROGRAMADOS, lista, privado=True)
+    return True, f"Te lo diré el {d.strftime('%Y-%m-%d a las %H:%M')}."
+
+
+def registrar_limite(args: dict) -> tuple[bool, str]:
+    """Métricas (punto 9): lo que Jarvis no pudo hacer por falta de herramienta."""
+    motivo = _re.sub(r"\s+", " ", str(args.get("motivo", ""))).strip()[:160]
+    if not motivo:
+        return False, "Falta el motivo."
+    try:
+        rutas.DATA.mkdir(exist_ok=True)
+        with open(rutas.LIMITES, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": time.time(), "motivo": motivo}, ensure_ascii=False) + "\n")
+    except OSError as e:
+        return False, f"No pude anotarlo: {e}"
+    return True, "Anotado. Dile al usuario en una frase corta que aún no puedes hacerlo."
+
+
 TOOLS = {
     "abrir_ajustes": (abrir_ajustes, "Abre la ventana de ajustes del propio asistente (nombre, voz, orbe, permisos…).", {}, []),
     "abrir_app": (abrir_app, "Abre una aplicación instalada en el Mac (p. ej. CapCut, Spotify, Safari, Notas).",
@@ -615,20 +727,69 @@ TOOLS = {
     "leer_pagina": (leer_pagina, "Lee una página web, SOLO de sitios oficiales permitidos (gobierno, instituciones, Wikipedia, ayuda oficial). Cualquier otro sitio se rechaza.",
                     {"url": {"type": "string"}}, ["url"]),
     "clima": (clima, "Clima actual y pronóstico de 3 días en la ubicación del usuario.", {}, []),
+    "programar_aviso": (programar_aviso, "Programa un aviso hablado: a esa hora el asistente dirá el texto en voz alta. Llama antes a fecha_hora para calcular la hora.",
+                        {"texto": {"type": "string", "description": "Lo que hay que decir"},
+                         "fecha_hora": {"type": "string", "description": "ISO local, p. ej. 2026-11-07T17:30"}},
+                        ["texto", "fecha_hora"]),
+    "registrar_limite": (registrar_limite, "Anota algo que el usuario pidió y NO puedes hacer por falta de herramienta (p. ej. 'leer correos'). Llámala siempre en ese caso, antes de responder.",
+                         {"motivo": {"type": "string", "description": "Qué faltó, en pocas palabras"}}, ["motivo"]),
 }
 
-TOOL_SPECS = [{"name": n, "description": d,
-               "inputSchema": {"type": "object", "properties": props, "required": req}}
-              for n, (_, d, props, req) in TOOLS.items()]
+
+def cargar_paquetes(ids: list[str]) -> list[str]:
+    """Añade a TOOLS las herramientas de cada paquete (solo las declaradas en su
+    manifiesto). Devuelve los paquetes cargados."""
+    import importlib.util
+    import comun
+    todos = comun.manifiestos()
+    cargados = []
+    for pid in ids:
+        m = todos.get(pid)
+        f = rutas.PAQUETES / pid / "herramientas.py"
+        if not m or not f.is_file():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(f"paquete_{pid}", f)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception as e:
+            print(f"paquete {pid}: {e}", file=sys.stderr)
+            continue
+        for name in m["herramientas"]:
+            if name in getattr(mod, "TOOLS", {}) and name not in TOOLS:
+                TOOLS[name] = mod.TOOLS[name]
+        cargados.append(pid)
+    return cargados
+
+
+def _ids_de_argv() -> list[str]:
+    if "--paquetes" in sys.argv:
+        i = sys.argv.index("--paquetes")
+        raw = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+        return [p for p in raw.split(",") if p]
+    import comun
+    return comun.paquetes_activos()
+
+
+if __name__ == "__main__":
+    cargar_paquetes(_ids_de_argv())
+
+
+
+def tool_specs() -> list[dict]:
+    return [{"name": n, "description": d,
+             "inputSchema": {"type": "object", "properties": props, "required": req}}
+            for n, (_, d, props, req) in TOOLS.items()]
 
 
 # ---------------------------------------------------------------------------
 # protocolo MCP
 # ---------------------------------------------------------------------------
 
-def _result(rid, ok: bool, text: str) -> dict:
-    return {"jsonrpc": "2.0", "id": rid,
-            "result": {"content": [{"type": "text", "text": text}], "isError": not ok}}
+def _result(rid, ok: bool, out) -> dict:
+    """`out` es texto o una lista de bloques MCP (p. ej. una imagen de la pantalla)."""
+    content = out if isinstance(out, list) else [{"type": "text", "text": str(out)}]
+    return {"jsonrpc": "2.0", "id": rid, "result": {"content": content, "isError": not ok}}
 
 
 def handle(msg: dict) -> dict | None:
@@ -642,7 +803,7 @@ def handle(msg: dict) -> dict | None:
     if method == "ping":
         return {"jsonrpc": "2.0", "id": rid, "result": {}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOL_SPECS}}
+        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": tool_specs()}}
     if method == "tools/call":
         params = msg.get("params") or {}
         tool = TOOLS.get(params.get("name", ""))

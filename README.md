@@ -3,7 +3,7 @@
 Jarvis de escritorio es un asistente de voz para macOS que vive en la barra de menús. Al decir su palabra de activación aparece una esfera de partículas animada (Three.js) que escucha tu petición, la resuelve con Claude (a través de tu suscripción a Claude Code, sin API key) y te responde con una voz neural gratuita de Microsoft Edge.
 
 - 🎙️ **Privado:** la palabra de activación y la transcripción se hacen en tu Mac con Whisper; solo el texto llega al cerebro.
-- 🔒 **Limitado a propósito:** solo puede usar sus herramientas (apps, Spotify, Recordatorios, volumen, hora, clima, Wikipedia). En internet solo entra a los sitios oficiales de una lista blanca.
+- 🔒 **Limitado a propósito:** solo puede usar sus herramientas y las de los paquetes que actives. En internet solo entra a los sitios oficiales de una lista blanca; las acciones de riesgo esperan tu doble clic y nunca actúa en un turno que leyó contenido externo.
 - ⚙️ **Configurable:** una ventana de ajustes en React para cambiar nombre, palabra de activación, personalidad, modelo (Haiku, Sonnet u Opus), voz, sensibilidad del micrófono, el aspecto de la esfera y los sitios permitidos, y para ver permisos, uso de Claude y actividad.
 - 🍎 **App nativa:** `Jarvis.app` con un lanzador propio en C, arranque al iniciar sesión e icono en la barra de menús.
 
@@ -42,6 +42,7 @@ Requisitos: macOS 13+, Python 3.12 de Homebrew, Node.js y
 ```sh
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env
+./empaquetar/crear_certificado.sh  # una vez: firma estable, macOS no vuelve a pedir permisos
 ./empaquetar/crear_app.sh          # construye e instala /Applications/Jarvis.app
 ./scripts/instalar_inicio.sh       # que arranque sola al iniciar sesión (y la abre)
 ```
@@ -51,8 +52,34 @@ Accesibilidad (para que Spotify reproduzca solo) y Automatización. Están en
 Ajustes → Sistema, con un botón para cada uno.
 
 La app usa el código y el `.venv` de esta carpeta: si la mueves, vuelve a
-ejecutar `crear_app.sh`. Cambiar código Python no requiere reconstruir, solo
-reiniciar Jarvis.
+ejecutar `crear_app.sh`. El lanzador solo ejecuta `motor.py`, `acciones_mcp.py`,
+`limitar_busqueda.py` y `limitar_escritura.py` si su SHA-256 coincide con el del
+momento de compilar: **si cambias alguno de esos cuatro, vuelve a ejecutar
+`crear_app.sh`**. El resto del código Python solo requiere reiniciar Jarvis.
+
+## Plan de mejoras y seguridad (v1.1)
+
+Aplicado según `Jarvis_Plan_de_Mejoras.pdf`. La tabla completa de funciones
+(las que ya estaban y las nuevas) está en **Ajustes → Funciones**.
+
+- **Seguridad (P0):** lanzador restringido con hashes; hook
+  `limitar_escritura.py` que bloquea escrituras en turnos con contenido
+  externo y pide **doble clic en la esfera** (ámbar) para las acciones de
+  riesgo; reglas anti-exfiltración en `leer_pagina` y aviso de dominios de riesgo.
+- **Paquetes de capacidad (`paquetes/`):** manifiesto + `SKILL.md` +
+  `herramientas.py`. Se activan en Ajustes → Paquetes y la app los aplica al
+  arrancar el cerebro (herramientas, skills, hooks y permisos). Incluye
+  Desarrollo (delegar a Claude Code, proyectos, git, puertos, tests…),
+  Portapapeles, Atajos de Apple, Memoria, Calendario y Notas, Control del
+  sistema, Pantalla (desactivado por defecto) y Dictado a hoja de cálculo.
+- **Experiencia:** voz en streaming por frases, respuesta rápida sin Claude
+  para comandos frecuentes, briefing del día y avisos hablados con horario de
+  silencio.
+- **Datos:** métricas de latencia por fase y «Lo que Jarvis no pudo hacer» en
+  Actividad; retención del historial y botón para borrarlo; el secreto de
+  Spotify vive en el Llavero.
+- **Pendiente por diseño:** barge-in, modelo según complejidad, terminal con
+  Touch ID y mover el proyecto fuera del Escritorio (ver Funciones).
 
 - Abrir sin ventana: `./scripts/iniciar.sh` · cerrar: `./scripts/detener.sh`
 - Quitar del arranque automático: `./scripts/quitar_inicio.sh`

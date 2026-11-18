@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Api, Config, Env, Orb, SiteGroup, Status } from './api';
 import { CanvasOrb } from './orb';
-import { Actividad, Capacidades, Internet, Sistema } from './pagesB';
+import { Actividad, Internet, Sistema } from './pagesB';
 import { Identidad, Inicio, OrbePage, Voz } from './pagesA';
+import { Atajos, Funciones, Memoria, Paquetes, Proyectos } from './pagesC';
 import { StoreCtx, type Page, type Store } from './store';
 import { BLUE, GOLD, MONO, RED, SANS, makeTheme } from './theme';
 import { Dot, Eyebrow, ThemeCtx } from './ui';
@@ -131,7 +132,7 @@ export function App({ api, config }: { api: Api; config: Config }) {
 
   // ---- barra lateral ----
   const perms = status?.perms;
-  const permMissing = !!perms && (['mic', 'acc', 'auto'] as const).some(k => perms[k] === 'pending' || perms[k] === 'denied');
+  const permMissing = !!perms && (['mic', 'acc', 'auto', 'screen'] as const).some(k => perms[k] === 'pending' || perms[k] === 'denied');
   const spMode = env.spId && env.spSecret ? 1 : perms?.acc === 'granted' ? 2 : 3;
   const svc = serviceInfo(status, restarting, T.acc);
 
@@ -183,7 +184,11 @@ export function App({ api, config }: { api: Api; config: Config }) {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <Eyebrow style={{ padding: '0 10px 6px' }}>CONTROL</Eyebrow>
-                {nav([['capacidades', 'Capacidades', spMode === 3], ['internet', 'Internet'], ['actividad', 'Actividad'], ['sistema', 'Sistema', permMissing]])}
+                {nav([['paquetes', 'Paquetes', spMode === 3], ['proyectos', 'Proyectos'], ['atajos', 'Atajos'], ['memoria', 'Memoria']])}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <Eyebrow style={{ padding: '0 10px 6px' }}>SEGURIDAD Y DATOS</Eyebrow>
+                {nav([['internet', 'Internet'], ['actividad', 'Actividad'], ['sistema', 'Sistema', permMissing], ['funciones', 'Funciones']])}
               </div>
               <div style={{ marginTop: 'auto', padding: '12px 10px 4px', borderTop: `1px solid rgba(${T.ln},0.07)`, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <Eyebrow spacing=".1em">AUDIO 100 % LOCAL</Eyebrow>
@@ -197,10 +202,14 @@ export function App({ api, config }: { api: Api; config: Config }) {
                 {page === 'orbe' && <OrbePage />}
                 {page === 'identidad' && <Identidad />}
                 {page === 'voz' && <Voz />}
-                {page === 'capacidades' && <Capacidades />}
                 {page === 'internet' && <Internet />}
                 {page === 'actividad' && <Actividad />}
                 {page === 'sistema' && <Sistema />}
+                {page === 'paquetes' && <Paquetes />}
+                {page === 'proyectos' && <Proyectos />}
+                {page === 'atajos' && <Atajos />}
+                {page === 'memoria' && <Memoria />}
+                {page === 'funciones' && <Funciones />}
               </div>
 
               {(dirty > 0 || restarting || restartErr) && (

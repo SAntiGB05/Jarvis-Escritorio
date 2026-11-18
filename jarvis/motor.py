@@ -4,7 +4,11 @@ motor.py — el motor de Jarvis: sin navegador, sin chat.
 Una esfera pequeña aparece arriba a la derecha SOLO cuando dices "Raphael",
 escucha tu petición, la ejecuta (apps, Spotify, recordatorios…), te responde
 en voz alta y vuelve a esconderse. Doble clic en la esfera: la desactiva y
-descarta lo que le pediste.
+descarta lo que le pediste — salvo si hay una acción de riesgo esperando
+confirmación (esfera ámbar): entonces el doble clic la CONFIRMA.
+
+Plan de mejoras: voz en streaming por frases, métricas por fase en
+actividad.jsonl, fast-path local sin LLM, briefing del día y avisos hablados.
 
 Lo lanza la app (control.py). A mano, sin la app:  .venv/bin/python jarvis/motor.py
 """
@@ -19,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -252,11 +257,208 @@ def _estado(**campos) -> None:
         pass
 
 
-def _registrar(tu: str, respuesta: str, herramientas: list[str], ok: bool = True) -> None:
+def _registrar(tu: str, respuesta: str, herramientas: list[str], ok: bool = True,
+               ms: dict | None = None, no_resuelto: bool = False, motivo: str | None = None,
+               rapido: bool = False) -> None:
+    """Una línea por petición en data/actividad.jsonl, con la latencia por fase
+    (plan, punto 9) y si quedó sin resolver."""
     try:
         with open(ACTIVITY_FILE, "a") as f:
             f.write(json.dumps({"ts": time.time(), "tu": tu, "respuesta": respuesta,
-                                "herramientas": herramientas, "ok": ok}, ensure_ascii=False) + "\n")
+                                "herramientas": herramientas, "ok": ok,
+                                "ms": {k: int(v) for k, v in (ms or {}).items() if v is not None},
+                                "no_resuelto": no_resuelto, "motivo_no_resuelto": motivo,
+                                "rapido": rapido}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _limite_desde(ts: float) -> str | None:
+    """El motivo que anotó registrar_limite durante este turno, si lo hubo."""
+    try:
+        lineas = rutas.LIMITES.read_text(encoding="utf-8").splitlines()[-5:]
+    except OSError:
+        return None
+    for linea in reversed(lineas):
+        try:
+            d = json.loads(linea)
+        except ValueError:
+            continue
+        if float(d.get("ts", 0)) >= ts - 1:
+            return str(d.get("motivo") or "") or None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# voz en streaming por frases (plan, punto 8)
+# ---------------------------------------------------------------------------
+
+_ABREV = {"sr", "sra", "srta", "dr", "dra", "ud", "uds", "etc", "ej", "núm", "num", "no", "av",
+          "aprox", "pág", "pag", "tel", "vs", "lic", "ing", "prof", "mr", "mrs", "st", "km", "min"}
+_FIN_RE = re.compile(r"[.?!:…;](?=\s)|\n")
+
+
+class Divisor:
+    """Junta los deltas de texto de Claude y devuelve frases completas. Corta en
+    . ? ! : seguidos de espacio, sin cortar abreviaturas («Dr.») ni números («3.5»)."""
+
+    def __init__(self):
+        self.buf = ""
+
+    def feed(self, delta: str) -> list[str]:
+        self.buf += delta
+        out, inicio = [], 0
+        for m in _FIN_RE.finditer(self.buf):
+            fin = m.end()
+            trozo = self.buf[inicio:fin]
+            ultima = re.findall(r"([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\.$", trozo.strip())
+            if ultima and (ultima[-1].lower() in _ABREV or len(ultima[-1]) == 1):
+                continue                          # «Dr.», «p. ej.», iniciales
+            if len(trozo.strip()) >= 4:
+                out.append(trozo.strip())
+                inicio = fin
+        self.buf = self.buf[inicio:]
+        return out
+
+    def resto(self) -> str:
+        r, self.buf = self.buf.strip(), ""
+        return r
+
+    def descartar(self) -> None:
+        self.buf = ""
+
+
+def _para_voz(texto: str) -> str:
+    """Quita lo que no se debe leer en voz alta: markdown, URLs y viñetas."""
+    t = re.sub(r"https?://\S+|www\.\S+", "", texto)
+    t = re.sub(r"`{1,3}|\*{1,3}|_{2,}|^#+\s*|^\s*[-•]\s+", "", t, flags=re.M)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+class Locutor:
+    """Cola de frases: cada frase empieza a sintetizarse al llegar (la N+1 se
+    prepara mientras suena la N) y se reproducen en orden. El doble clic vacía
+    la cola. Todo en el bucle asyncio del motor."""
+
+    def __init__(self, orbe: "Orbe", oido, cancelar: threading.Event, voz):
+        self.orbe, self.oido, self.cancelar, self.voz = orbe, oido, cancelar, voz
+        self.cola: asyncio.Queue = asyncio.Queue()
+        self.reposo = "thinking"                  # estado de la esfera entre frases
+        self.dichas = 0
+        self.t_primer_audio: float | None = None  # monotonic del primer sonido
+        self.ms_sintesis: float | None = None     # lo que tardó la primera síntesis
+        self._worker = asyncio.create_task(self._bucle())
+
+    def decir(self, texto: str) -> None:
+        texto = _para_voz(texto)
+        if texto and not self.cancelar.is_set():
+            t0 = time.monotonic()
+            self.cola.put_nowait((asyncio.create_task(self.voz.synth_mp3(texto)), t0))
+
+    def pendiente(self) -> bool:
+        return not self.cola.empty() or self._hablando
+
+    _hablando = False
+
+    async def _bucle(self) -> None:
+        while True:
+            tarea, t0 = await self.cola.get()
+            try:
+                mp3 = await tarea
+                if self.ms_sintesis is None:
+                    self.ms_sintesis = (time.monotonic() - t0) * 1000
+                if mp3 and not self.cancelar.is_set():
+                    self._hablando = True
+                    self.orbe.state("speaking")
+                    self.oido.mute(True)
+                    if self.t_primer_audio is None:
+                        self.t_primer_audio = time.monotonic()
+                    try:
+                        await asyncio.to_thread(self.voz.play, mp3, self.orbe.level, self.cancelar)
+                    finally:
+                        self.dichas += 1
+                        if self.cola.empty():
+                            self._hablando = False
+                            self.oido.mute(False)
+                            if not self.cancelar.is_set():
+                                self.orbe.state(self.reposo)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("locutor")
+            finally:
+                self.cola.task_done()
+
+    async def esperar(self) -> None:
+        await self.cola.join()
+
+    def vaciar(self) -> None:
+        while not self.cola.empty():
+            tarea, _ = self.cola.get_nowait()
+            tarea.cancel()
+            self.cola.task_done()
+
+    async def cerrar(self) -> None:
+        self.vaciar()
+        self._worker.cancel()
+        try:
+            await self._worker
+        except (asyncio.CancelledError, Exception):
+            pass
+        self._hablando = False
+        self.oido.mute(False)
+
+
+# ---------------------------------------------------------------------------
+# horario de silencio / No molestar (avisos y briefing)
+# ---------------------------------------------------------------------------
+
+def _no_molestar() -> bool:
+    """Best effort: un modo de concentración activo según la base de datos de
+    DoNotDisturb del usuario. Si no se puede leer, se asume que no."""
+    f = Path.home() / "Library" / "DoNotDisturb" / "DB" / "Assertions.json"
+    try:
+        data = json.loads(f.read_text())
+        return any(d.get("storeAssertionRecords") for d in data.get("data", []))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _en_silencio(ahora: datetime | None = None) -> bool:
+    """JARVIS_SILENCIO=22:00-07:00 (vacío = nunca) o No molestar activo."""
+    ahora = ahora or datetime.now()
+    rango = os.getenv("JARVIS_SILENCIO", "").strip()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", rango)
+    if m:
+        a = int(m.group(1)) * 60 + int(m.group(2))
+        b = int(m.group(3)) * 60 + int(m.group(4))
+        x = ahora.hour * 60 + ahora.minute
+        if (a <= x < b) if a <= b else (x >= a or x < b):
+            return True
+    return _no_molestar()
+
+
+BRIEFING_FILE = DATA / "briefing.json"
+BRIEFING_PROMPT = ("(sistema) Es la primera vez que el usuario te activa hoy. Dale un briefing "
+                   "hablado breve, en 2 o 3 frases y sin listas: un saludo, el clima de "
+                   "hoy (herramienta clima), sus recordatorios pendientes (listar_recordatorios) y, si "
+                   "tienes la herramienta agenda, sus eventos de hoy. Solo lo esencial, sin fuentes.")
+
+
+def _toca_briefing() -> bool:
+    if os.getenv("JARVIS_BRIEFING", "0").strip() not in ("1", "true", "si", "sí"):
+        return False
+    hoy = datetime.now().date().isoformat()
+    try:
+        visto = json.loads(BRIEFING_FILE.read_text()).get("dia")
+    except (OSError, ValueError, AttributeError):
+        visto = None
+    return visto != hoy and not _en_silencio()
+
+
+def _briefing_hecho() -> None:
+    try:
+        BRIEFING_FILE.write_text(json.dumps({"dia": datetime.now().date().isoformat()}))
     except OSError:
         pass
 
@@ -265,6 +467,8 @@ async def motor(orbe: Orbe, stop: threading.Event) -> None:
     from oido import Oido
     import voz
     import cerebro as cer
+    import comun
+    import fastpath
 
     # Spotify sin Premium pulsa «Reproducir» en la app: necesita Accesibilidad.
     try:
@@ -277,10 +481,13 @@ async def motor(orbe: Orbe, stop: threading.Event) -> None:
     except Exception as e:
         log.debug("comprobación de accesibilidad: %s", e)
 
+    comun.preparar_avisos()
+    rutas.CONFIRMAR.unlink(missing_ok=True)       # de una sesión anterior
     _estado(cerebro="arrancando")
     oido = Oido()
     brain = cer.crear(model=os.getenv("JARVIS_BRAIN_MODEL", "haiku"),
                       user_name=os.getenv("USER_NAME", ""))
+    log.info("paquetes activos: %s", ", ".join(comun.paquetes_activos()) or "ninguno")
     log.info("arrancando el cerebro…")
     if not await brain.start():
         log.error("el cerebro no arrancó: %s", brain.failure_reason or "revisa `claude` y tu sesión")
@@ -290,15 +497,28 @@ async def motor(orbe: Orbe, stop: threading.Event) -> None:
         orbe.hide()
         return
     oido.start()
-    _estado(cerebro="ok", modelo=os.getenv("JARVIS_BRAIN_MODEL", "haiku"), palabra=oido.wake_word)
+    _estado(cerebro="ok", modelo=os.getenv("JARVIS_BRAIN_MODEL", "haiku"), palabra=oido.wake_word,
+            paquetes=comun.paquetes_activos())
     log.info("listo. Di «%s».", oido.wake_word)
 
-    # Doble clic en la esfera mientras está activa → se cancela todo.
     loop = asyncio.get_running_loop()
     cancelar = oido.cancelar                     # también corta grabación y voz
     activa: dict = {"task": None}
+    confirmacion: dict = {"nonce": None}         # confirmación física pendiente
 
     def al_doble_clic() -> None:
+        # Con una acción de riesgo esperando, el doble clic la CONFIRMA (punto 3).
+        nonce = confirmacion.get("nonce")
+        if nonce:
+            try:
+                f = rutas.AVISOS / f"confirmado-{nonce}"
+                f.write_text(str(time.time()))
+                os.chmod(f, 0o600)
+                log.info("doble clic: acción confirmada")
+            except OSError as e:
+                log.warning("no pude confirmar: %s", e)
+            confirmacion["nonce"] = None
+            return
         t = activa["task"]
         if t is not None and not t.done() and not cancelar.is_set():
             log.info("doble clic: Jarvis desactivado, petición descartada")
@@ -321,16 +541,6 @@ async def motor(orbe: Orbe, stop: threading.Event) -> None:
         mp3 = await voz.synth_mp3(texto)
         if mp3:
             await asyncio.to_thread(voz.play, mp3, orbe.level)
-
-    async def decir(texto: str) -> None:
-        orbe.state("speaking")
-        mp3 = await voz.synth_mp3(texto)
-        if mp3:
-            oido.mute(True)
-            try:
-                await asyncio.to_thread(voz.play, mp3, orbe.level, cancelar)
-            finally:
-                oido.mute(False)
 
     # La música de Spotify se colaba como si fueras tú hablando y mantenía
     # viva la conversación. Mientras Jarvis está activo se baja, como Siri.
@@ -358,59 +568,152 @@ async def motor(orbe: Orbe, stop: threading.Event) -> None:
         if vol is not None:
             _osa(_RESTORE, str(vol))
 
+    def leer_confirmacion() -> dict | None:
+        d = comun.leer_json(rutas.CONFIRMAR, {})
+        if d.get("nonce") and float(d.get("hasta", 0)) > time.time():
+            return d
+        return None
+
+    async def turno_hablado(text: str, locutor: Locutor, avisar_espera: bool = True):
+        """Un turno de Claude con voz en streaming. Devuelve (result, ms)."""
+        divisor = Divisor()
+        t0 = time.monotonic()
+
+        def on_delta(d: str) -> None:
+            for frase in divisor.feed(d):
+                locutor.decir(frase)
+
+        turno = asyncio.create_task(brain.turn(text, on_delta=on_delta, on_tool=divisor.descartar))
+        dijo_espera, nonce_visto = False, None
+        try:
+            while not turno.done():
+                await asyncio.wait({turno}, timeout=0.15)
+                pend = leer_confirmacion()
+                if pend and pend["nonce"] != nonce_visto:
+                    # Acción de riesgo: esfera ámbar y anuncio; el doble clic confirma.
+                    nonce_visto = pend["nonce"]
+                    confirmacion["nonce"] = nonce_visto
+                    locutor.reposo = "confirm"
+                    orbe.state("confirm")
+                    locutor.decir(str(pend.get("resumen", "Voy a hacer una acción de riesgo.")))
+                    locutor.decir("Toca la esfera dos veces para confirmar.")
+                elif not pend and confirmacion.get("nonce") == nonce_visto and nonce_visto:
+                    confirmacion["nonce"] = None  # caducó o ya se resolvió
+                    locutor.reposo = "thinking"
+                    if not locutor.pendiente():
+                        orbe.state("thinking")
+                if (avisar_espera and not dijo_espera and not nonce_visto and locutor.dichas == 0
+                        and not locutor.pendiente() and time.monotonic() - t0 > 4.5):
+                    dijo_espera = True            # p. ej. una búsqueda web
+                    locutor.decir("Un momento, lo estoy buscando.")
+            result = turno.result()
+        except asyncio.CancelledError:
+            if not turno.done():
+                brain.interrumpir()
+            raise
+        except Exception:
+            log.exception("turno falló")
+            result = None
+        finally:
+            confirmacion["nonce"] = None
+            locutor.reposo = "thinking"
+        ok = result is not None and result.stop_reason == "result" and result.text.strip()
+        if ok:
+            locutor.decir(divisor.resto())
+        ms = {"primer_token": (result.first_delta_sec or 0) * 1000 if result and result.first_delta_sec else None,
+              "claude_total": result.duration_sec * 1000 if result else None}
+        return result, ms
+
     async def conversar() -> None:
         first = True
-        while not stop.is_set():
-            if first and oido.resto:           # "Raphael, abre Spotify" de un tirón
-                text, oido.resto = oido.resto, ""
+        locutor = Locutor(orbe, oido, cancelar, voz)
+        try:
+            if _toca_briefing() and not oido.resto:
+                _briefing_hecho()
                 orbe.state("thinking")
-            else:
-                audio = await asyncio.to_thread(
-                    oido.record_utterance, orbe.level, 5.0 if first else FOLLOW_UP_SEC,
-                    medir_ambiente=not first)
-                if audio is None:
-                    return
-                orbe.state("thinking")
-                text = await asyncio.to_thread(oido.transcribe, audio)
-            log.info("Tú: %s", text or "(nada)")
-            if not text:
-                return
-            first = False
-            turno = asyncio.create_task(brain.turn(text))
-            try:
-                # Si tarda (p. ej. una búsqueda web), avisar en vez de quedarse callado.
-                done_, _ = await asyncio.wait({turno}, timeout=4.5)
-                if not done_:
-                    await decir("Un momento, lo estoy buscando.")
+                result, ms = await turno_hablado(BRIEFING_PROMPT, locutor, avisar_espera=False)
+                await locutor.esperar()
+                if result is not None and result.stop_reason == "result":
+                    _registrar("(briefing del día)", result.text.strip(),
+                               [t.removeprefix("mcp__acciones__") for t in result.tools], ms=ms)
+                first = False
+                orbe.state("listening")
+            while not stop.is_set():
+                ms: dict = {}
+                if first and oido.resto:           # "Raphael, abre Spotify" de un tirón
+                    text, oido.resto = oido.resto, ""
                     orbe.state("thinking")
-                # shield: cancelar a la fuerza el turno desalinearía el
-                # protocolo con `claude -p`; se le pide que lo abandone.
-                result = await asyncio.shield(turno)
-            except asyncio.CancelledError:
-                if not turno.done():
-                    brain.interrumpir()
-                raise
-            except Exception:
-                log.exception("turno falló")
-                result = None
-            if result is None or result.stop_reason != "result" or not result.text.strip():
-                orbe.state("error")
-                reason = getattr(result, "stop_reason", "error")
-                _registrar(text, "(límite de uso)" if reason == "rate_limited" else "(falló)", [], ok=False)
-                await decir("Lo siento, algo falló." if reason != "rate_limited"
-                            else "He alcanzado el límite de uso por ahora.")
-                orbe.state("error")
-                await asyncio.sleep(2.0)
-                return
-            reply = result.text.strip()
-            log.info("%s: %s  [herramientas: %s]", NOMBRE, reply, ", ".join(result.tools) or "-")
-            _registrar(text, reply, [t.removeprefix("mcp__acciones__") for t in result.tools])
-            await decir(reply)
-            orbe.state("done")
-            await asyncio.sleep(1.2)
-            if BYE_RE.search(text):
-                return
-            orbe.state("listening")          # puedes seguir hablando sin repetir "Raphael"
+                else:
+                    audio = await asyncio.to_thread(
+                        oido.record_utterance, orbe.level, 5.0 if first else FOLLOW_UP_SEC,
+                        medir_ambiente=not first)
+                    if audio is None:
+                        return
+                    orbe.state("thinking")
+                    tw = time.monotonic()
+                    text = await asyncio.to_thread(oido.transcribe, audio)
+                    ms["whisper"] = (time.monotonic() - tw) * 1000
+                log.info("Tú: %s", text or "(nada)")
+                if not text:
+                    return
+                first = False
+                t_texto = time.monotonic()
+                t_epoch = time.time()
+
+                # Fast-path local: sin Claude para los comandos frecuentes (punto 10).
+                rapido = None
+                if fastpath.activo():
+                    try:
+                        rapido = await asyncio.to_thread(fastpath.intentar, text)
+                    except Exception:
+                        log.exception("fast-path")
+                if rapido is not None:
+                    ok, reply, tool = rapido
+                    locutor.decir(reply)
+                    await locutor.esperar()
+                    ms["total"] = (time.monotonic() - t_texto) * 1000
+                    log.info("%s (rápido): %s", NOMBRE, reply)
+                    _registrar(text, reply, [tool], ok=ok, ms=ms, rapido=True)
+                    orbe.state("done" if ok else "error")
+                    await asyncio.sleep(1.0)
+                    if BYE_RE.search(text):
+                        return
+                    orbe.state("listening")
+                    continue
+
+                result, ms_turno = await turno_hablado(text, locutor)
+                ms.update(ms_turno)
+                if result is None or result.stop_reason != "result" or not result.text.strip():
+                    locutor.vaciar()
+                    await locutor.esperar()
+                    orbe.state("error")
+                    reason = getattr(result, "stop_reason", "error")
+                    _registrar(text, "(límite de uso)" if reason == "rate_limited" else "(falló)", [],
+                               ok=False, ms=ms)
+                    locutor.reposo = "error"
+                    locutor.decir("Lo siento, algo falló." if reason != "rate_limited"
+                                  else "He alcanzado el límite de uso por ahora.")
+                    await locutor.esperar()
+                    orbe.state("error")
+                    await asyncio.sleep(2.0)
+                    return
+                await locutor.esperar()
+                if locutor.t_primer_audio:
+                    ms["primer_audio"] = (locutor.t_primer_audio - t_texto) * 1000
+                ms["tts_primer_audio"] = locutor.ms_sintesis
+                locutor.t_primer_audio, locutor.ms_sintesis = None, None
+                reply = result.text.strip()
+                tools = [t.removeprefix("mcp__acciones__") for t in result.tools]
+                motivo = _limite_desde(t_epoch) if "registrar_limite" in tools else None
+                log.info("%s: %s  [herramientas: %s]", NOMBRE, reply, ", ".join(tools) or "-")
+                _registrar(text, reply, tools, ms=ms, no_resuelto=motivo is not None, motivo=motivo)
+                orbe.state("done")
+                await asyncio.sleep(1.2)
+                if BYE_RE.search(text):
+                    return
+                orbe.state("listening")          # puedes seguir hablando sin repetir "Raphael"
+        finally:
+            await locutor.cerrar()
 
     async def vigilar_ajustes():
         """Ajustes del orbe en vivo y vista previa pedida desde la ventana de ajustes."""
@@ -444,8 +747,46 @@ async def motor(orbe: Orbe, stop: threading.Event) -> None:
                 orbe.state("idle")
                 orbe.hide()
 
+    async def vigilar_avisos():
+        """Avisos hablados a una hora (punto 16): programar_aviso los guarda en
+        data/avisos_programados.json y aquí se dicen, fuera de conversación y
+        respetando el horario de silencio / No molestar."""
+        while not stop.is_set():
+            await asyncio.sleep(15)
+            if activa["task"] is not None:
+                continue
+            lista = comun.leer_json(rutas.AVISOS_PROGRAMADOS, [])
+            ahora = time.time()
+            vencidos = [a for a in lista if isinstance(a, dict) and float(a.get("ts", 0)) <= ahora]
+            if not vencidos:
+                continue
+            caducados = [a for a in vencidos if ahora - float(a["ts"]) > 12 * 3600]
+            vencidos = [a for a in vencidos if a not in caducados]
+            if vencidos and _en_silencio():
+                vencidos = []                     # se dirán al terminar el silencio
+            hechos = {a.get("id") for a in vencidos + caducados}
+            if hechos:
+                comun.escribir_json(rutas.AVISOS_PROGRAMADOS,
+                                    [a for a in lista if isinstance(a, dict) and a.get("id") not in hechos],
+                                    privado=True)
+            for a in vencidos:
+                log.info("aviso programado: %s", a.get("texto"))
+                orbe.show(); orbe.state("speaking")
+                _chime(orbe)
+                await asyncio.sleep(0.4)
+                oido.mute(True)
+                try:
+                    await decir_simple(f"Aviso: {a.get('texto', '')}")
+                finally:
+                    oido.mute(False)
+                _registrar("(aviso programado)", str(a.get("texto", "")), ["programar_aviso"])
+                orbe.state("done")
+                await asyncio.sleep(1.0)
+                orbe.state("idle"); orbe.hide()
+
     asyncio.create_task(comprobar_microfono())
     asyncio.create_task(vigilar_ajustes())
+    asyncio.create_task(vigilar_avisos())
     while not stop.is_set():
         woke = await asyncio.to_thread(oido.wait_for_wake, stop)
         if not woke:
@@ -464,6 +805,7 @@ async def motor(orbe: Orbe, stop: threading.Event) -> None:
                 raise                            # cierre real, no doble clic
         finally:
             activa["task"] = None
+            confirmacion["nonce"] = None
             oido.mute(False)
             await asyncio.to_thread(restaurar_spotify, vol_spotify)
         orbe.state("idle")

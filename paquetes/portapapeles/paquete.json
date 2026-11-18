@@ -1,0 +1,13 @@
+{
+  "id": "portapapeles",
+  "nombre": "Portapapeles",
+  "descripcion": "Lee lo que copiaste para leerlo, resumirlo o traducirlo",
+  "riesgo": "lectura",
+  "por_defecto": true,
+  "herramientas": ["leer_portapapeles"],
+  "escritura": [],
+  "confirmacion": [],
+  "no_confiables": ["leer_portapapeles"],
+  "permisos_macos": [],
+  "dominios": []
+}

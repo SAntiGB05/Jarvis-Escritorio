@@ -50,6 +50,7 @@ export const ERR_C = [[0.55, 0.01, 0], [1, 0.03, 0.01], [1, 0.42, 0.3]];
 export const STATES: Record<string, [string, string]> = {
   idle: ['En espera', '#FFCF80'], listening: ['Escuchando', '#FFCF80'], thinking: ['Pensando', '#FF9A2E'],
   speaking: ['Hablando', '#FF9A2E'], done: ['Completado', '#8DB8FF'], error: ['Error', '#FF8A80'],
+  confirm: ['Confirmar', '#FFB020'],
 };
 
 export const rgb = (a: number[], al: number) => `rgba(${(a[0] * 255) | 0},${(a[1] * 255) | 0},${(a[2] * 255) | 0},${al})`;

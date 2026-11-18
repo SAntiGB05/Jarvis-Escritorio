@@ -1,0 +1,13 @@
+{
+  "id": "memoria",
+  "nombre": "Memoria",
+  "descripcion": "Recuerda datos que le pidas; los ves y borras en el panel",
+  "riesgo": "escritura",
+  "por_defecto": true,
+  "herramientas": ["recordar"],
+  "escritura": ["recordar"],
+  "confirmacion": [],
+  "no_confiables": [],
+  "permisos_macos": [],
+  "dominios": []
+}

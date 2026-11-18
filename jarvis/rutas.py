@@ -24,3 +24,18 @@ CONTROL = CODIGO / "control.py"     # la app
 MOTOR = CODIGO / "motor.py"         # esfera + oído + cerebro
 ACCIONES = CODIGO / "acciones_mcp.py"
 FILTRO_BUSQUEDA = CODIGO / "limitar_busqueda.py"
+FILTRO_ESCRITURA = CODIGO / "limitar_escritura.py"   # hook: escrituras y confirmación física
+
+# Paquetes de capacidad (manifiesto + SKILL.md + herramientas.py por carpeta)
+PAQUETES = RAIZ / "paquetes"
+PAQUETES_ACTIVOS = DATA / "paquetes.json"            # lo escribe la ventana de ajustes
+
+# Datos de las capacidades nuevas
+PROYECTOS = DATA / "proyectos.json"                  # registro de proyectos (paquete Desarrollo)
+ATAJOS = DATA / "atajos.json"                        # atajos de Apple permitidos
+MEMORIA = DATA / "memoria.json"                      # lo que Jarvis recuerda del usuario
+AVISOS_PROGRAMADOS = DATA / "avisos_programados.json"
+LIMITES = DATA / "limites.jsonl"                     # lo que Jarvis no pudo hacer (registrar_limite)
+ACTIVIDAD = DATA / "actividad.jsonl"
+BUSQUEDAS = DATA / "busquedas.log"
+CONFIRMAR = AVISOS / "confirmar.json"                # confirmación física pendiente (doble clic)

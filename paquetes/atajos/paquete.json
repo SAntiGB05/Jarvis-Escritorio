@@ -1,0 +1,14 @@
+{
+  "id": "atajos",
+  "nombre": "Atajos de Apple",
+  "descripcion": "Ejecuta solo los Atajos que elijas en el panel (HomeKit, concentración…)",
+  "riesgo": "escritura",
+  "por_defecto": false,
+  "herramientas": ["ejecutar_atajo", "listar_atajos"],
+  "escritura": [],
+  "confirmacion": [],
+  "no_confiables": ["ejecutar_atajo"],
+  "permisos_macos": [],
+  "dominios": [],
+  "nota": "Cada atajo se marca como lectura o escritura en Ajustes → Atajos; los de escritura piden doble clic."
+}

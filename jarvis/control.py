@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import comun                                     # noqa: E402
 import rutas                                     # noqa: E402
 
 ROOT = rutas.RAIZ
@@ -49,7 +50,7 @@ LOG_FILE = Path.home() / "Library" / "Logs" / "jarvis.log"
 LABEL = "com.jarvis.escritorio"
 PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 AJUSTES_HTML = rutas.AJUSTES_HTML
-VERSION = "1.0"
+VERSION = "1.1"
 
 log = logging.getLogger("jarvis.app")
 
@@ -78,12 +79,20 @@ ENV_MAP = {
     "lon": ("WEATHER_LONGITUDE", "-75.6811"),
     "spId": ("SPOTIFY_CLIENT_ID", ""),
     "spSecret": ("SPOTIFY_CLIENT_SECRET", ""),
+    # plan de mejoras
+    "fastpath": ("JARVIS_FASTPATH", "1"),          # comandos frecuentes sin Claude
+    "briefing": ("JARVIS_BRIEFING", "0"),          # briefing en la primera activación del día
+    "quiet": ("JARVIS_SILENCIO", ""),              # horario de silencio, p. ej. 22:00-07:00
+    "retention": ("JARVIS_RETENCION_DIAS", "30"),  # días de historial (0 = sin límite)
 }
+SECRETO_SPOTIFY = "SPOTIFY_CLIENT_SECRET"          # vive en el Llavero, no en .env
 ELECCIONES = {
     "persona": {"britanico", "cercano", "formal"},
     "brain": {"haiku", "sonnet", "opus"},
     "whisper": {"tiny", "base", "small", "medium", "large-v3"},
     "lang": {"es", "en", "pt"},
+    "fastpath": {"0", "1"},
+    "briefing": {"0", "1"},
 }
 _KEY_RE = re.compile(r"^\s*([A-Z0-9_]+)\s*=(.*)$")
 
@@ -117,6 +126,11 @@ def env_para_ui() -> dict:
     for k, ok in ELECCIONES.items():
         if ui[k] not in ok:
             ui[k] = ENV_MAP[k][1]
+    ui["spSecret"] = comun.secreto_leer(SECRETO_SPOTIFY) or ui["spSecret"]
+    try:
+        ui["retention"] = max(0, min(3650, int(float(ui["retention"]))))
+    except (TypeError, ValueError):
+        ui["retention"] = 30
     return ui
 
 
@@ -145,8 +159,28 @@ def ui_a_env(ui: dict) -> dict[str, str]:
                 float(v)
             except (TypeError, ValueError):
                 raise ValueError(f"{'Latitud' if k == 'lat' else 'Longitud'} no válida: {v!r}")
+        elif k == "quiet":
+            v = _limpio(v)
+            if v and not re.fullmatch(r"\d{1,2}:\d{2}-\d{1,2}:\d{2}", v.replace(" ", "")):
+                raise ValueError("Horario de silencio no válido: usa HH:MM-HH:MM, p. ej. 22:00-07:00")
+            v = v.replace(" ", "")
+        elif k == "retention":
+            v = str(int(max(0, min(3650, _num(str(v), 30)))))
+        elif k == "spSecret":
+            # Punto 19: al Llavero; en .env queda vacío.
+            if not comun.secreto_guardar(SECRETO_SPOTIFY, _limpio(v)):
+                raise ValueError("No pude guardar el secreto de Spotify en el Llavero.")
+            v = ""
         out[key] = _limpio(v)
     return out
+
+
+def migrar_secretos() -> None:
+    """Si el secreto de Spotify sigue en .env, lo pasa al Llavero y lo borra de .env."""
+    viejo = leer_env().get(SECRETO_SPOTIFY, "")
+    if viejo and comun.secreto_guardar(SECRETO_SPOTIFY, viejo):
+        guardar_env({SECRETO_SPOTIFY: ""})
+        log.info("secreto de Spotify movido al Llavero")
 
 
 def guardar_env(valores: dict[str, str]) -> None:
@@ -349,10 +383,46 @@ def _automatizar(bundle_id: str, preguntar: bool) -> int | None:
 
 
 AUTOMATIZA = ["com.spotify.client", "com.apple.reminders", "com.apple.systemevents"]
+NOMBRES_APP = {"com.spotify.client": "Spotify", "com.apple.reminders": "Recordatorios",
+               "com.apple.systemevents": "System Events", "com.apple.Terminal": "Terminal",
+               "com.apple.iCal": "Calendario", "com.apple.Notes": "Notas",
+               "com.apple.iWork.Numbers": "Numbers"}
+
+
+def automatiza() -> list[str]:
+    """Las apps que Jarvis controla: las del núcleo + las de los paquetes activos."""
+    out = list(AUTOMATIZA)
+    todos = comun.manifiestos()
+    for pid in comun.paquetes_activos():
+        for perm in todos[pid].get("permisos_macos", []):
+            if perm.startswith("automation:") and perm[11:] not in out:
+                out.append(perm[11:])
+    return out
+
+
+def _estado_auto(code: int | None) -> str:
+    return {0: "granted", -1743: "denied", -1744: "pending"}.get(code, "unknown")
+
+
+def detalle_automatizacion() -> list[dict]:
+    return [{"app": NOMBRES_APP.get(b, b), "id": b, "state": _estado_auto(_automatizar(b, False))}
+            for b in automatiza()]
+
+
+def permiso_pantalla(preguntar: bool = False) -> str:
+    try:
+        import Quartz
+        if Quartz.CGPreflightScreenCaptureAccess():
+            return "granted"
+        if preguntar:
+            Quartz.CGRequestScreenCaptureAccess()
+        return "pending"
+    except Exception:
+        return "unknown"
 
 
 def permiso_automatizacion(preguntar: bool = False) -> str:
-    res = [_automatizar(b, preguntar) for b in AUTOMATIZA]
+    res = [_automatizar(b, preguntar) for b in automatiza()]
     if -1743 in res:
         return "denied"
     if -1744 in res:
@@ -362,7 +432,8 @@ def permiso_automatizacion(preguntar: bool = False) -> str:
     return "unknown"                       # ninguna de esas apps está abierta ahora
 
 
-PANELES = {"mic": "Privacy_Microphone", "acc": "Privacy_Accessibility", "auto": "Privacy_Automation"}
+PANELES = {"mic": "Privacy_Microphone", "acc": "Privacy_Accessibility", "auto": "Privacy_Automation",
+           "screen": "Privacy_ScreenCapture"}
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +459,10 @@ def leer_actividad(limit: int = 40) -> dict:
         try:
             d = json.loads(line)
             items.append({"ts": float(d["ts"]), "you": str(d.get("tu", "")), "reply": str(d.get("respuesta", "")),
-                          "tools": [str(t) for t in d.get("herramientas", [])], "ok": bool(d.get("ok", True))})
+                          "tools": [str(t) for t in d.get("herramientas", [])], "ok": bool(d.get("ok", True)),
+                          "ms": {k: int(v) for k, v in (d.get("ms") or {}).items() if isinstance(v, (int, float))},
+                          "unresolved": bool(d.get("no_resuelto")), "reason": d.get("motivo_no_resuelto"),
+                          "fast": bool(d.get("rapido"))})
         except (ValueError, KeyError, TypeError):
             continue
     hoy = datetime.now().date()
@@ -400,6 +474,153 @@ def leer_actividad(limit: int = 40) -> dict:
             cuenta[d] += 1
     return {"items": list(reversed(items))[:max(1, min(200, int(limit)))],
             "days": [{"day": d.day, "date": d.isoformat(), "count": cuenta[d]} for d in dias]}
+
+
+def leer_metricas() -> dict:
+    """Punto 9: latencia media por fase, uso del fast-path y lo que no pudo hacer."""
+    items = leer_actividad(200)["items"]
+    fases = ("whisper", "primer_token", "claude_total", "tts_primer_audio", "primer_audio", "total")
+    medias = {}
+    for f in fases:
+        vals = sorted(it["ms"][f] for it in items if f in it.get("ms", {}))
+        if vals:
+            medias[f] = {"avg": int(sum(vals) / len(vals)), "p50": vals[len(vals) // 2], "n": len(vals)}
+    motivos: dict[str, dict] = {}
+    for it in items:
+        if it.get("unresolved"):
+            m = str(it.get("reason") or "sin motivo").strip()
+            k = m.lower()
+            e = motivos.setdefault(k, {"reason": m, "count": 0, "last": it["ts"], "examples": []})
+            e["count"] += 1
+            e["last"] = max(e["last"], it["ts"])
+            if len(e["examples"]) < 3:
+                e["examples"].append(it["you"])
+    reales = [it for it in items if not it["you"].startswith("(")]
+    return {"phases": medias, "count": len(reales),
+            "fast": sum(1 for it in reales if it.get("fast")),
+            "errors": sum(1 for it in reales if not it.get("ok")),
+            "unresolved": sorted(motivos.values(), key=lambda e: -e["count"])}
+
+
+def aplicar_retencion(dias: int | None = None) -> None:
+    """Punto 18: borra del historial lo más antiguo que `dias` (0 = sin límite)."""
+    if dias is None:
+        dias = env_para_ui()["retention"]
+    if not dias:
+        return
+    corte = time.time() - dias * 86400
+    for path, fecha in ((ACTIVITY_FILE, None), (rutas.LIMITES, None), (SEARCHES_FILE, "log")):
+        try:
+            lineas = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        quedan = []
+        for l in lineas:
+            try:
+                if fecha == "log":
+                    ts = datetime.strptime(l[:16], "%Y-%m-%d %H:%M").timestamp()
+                else:
+                    ts = float(json.loads(l).get("ts", 0))
+            except (ValueError, AttributeError):
+                ts = time.time()
+            if ts >= corte:
+                quedan.append(l)
+        if len(quedan) != len(lineas):
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text("\n".join(quedan) + ("\n" if quedan else ""), encoding="utf-8")
+            os.chmod(tmp, 0o600)
+            tmp.replace(path)
+
+
+def borrar_historial() -> None:
+    for path in (ACTIVITY_FILE, SEARCHES_FILE, rutas.LIMITES):
+        path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# paquetes, proyectos, atajos y memoria
+# ---------------------------------------------------------------------------
+
+def leer_paquetes() -> list[dict]:
+    activos = comun.paquetes_activos()
+    out = []
+    for pid, m in comun.manifiestos().items():
+        out.append({"id": pid, "name": m.get("nombre", pid), "desc": m.get("descripcion", ""),
+                    "risk": m.get("riesgo", "lectura"), "tools": m["herramientas"],
+                    "write": m["escritura"], "confirm": m["confirmacion"],
+                    "untrusted": m["no_confiables"], "perms": m["permisos_macos"],
+                    "note": m.get("nota", ""), "default": bool(m.get("por_defecto")),
+                    "active": pid in activos})
+    return out
+
+
+def guardar_paquetes(ids: list) -> list[dict]:
+    validos = set(comun.manifiestos())
+    comun.escribir_json(rutas.PAQUETES_ACTIVOS, {"activos": [str(i) for i in ids if str(i) in validos]})
+    return leer_paquetes()
+
+
+def leer_proyectos() -> list[dict]:
+    import shlex
+    reg = comun.leer_json(rutas.PROYECTOS, {})
+    out = []
+    for nombre, v in reg.items():
+        if not isinstance(v, dict):
+            continue
+        ruta = str(v.get("ruta", ""))
+        out.append({"name": nombre, "path": ruta, "exists": Path(ruta).expanduser().is_dir(),
+                    "dev": shlex.join(v["dev"]) if isinstance(v.get("dev"), list) else "",
+                    "test": shlex.join(v["test"]) if isinstance(v.get("test"), list) else ""})
+    return out
+
+
+def guardar_proyectos(lista: list) -> dict:
+    import shlex
+    reg: dict = {}
+    for p in lista or []:
+        nombre = re.sub(r"[^\w .-]", "", str(p.get("name", ""))).strip()[:40]
+        ruta = str(p.get("path", "")).strip()
+        if not nombre or not ruta:
+            continue
+        if nombre in reg:
+            return {"ok": False, "error": f"El nombre «{nombre}» está repetido."}
+        if not Path(ruta).expanduser().is_dir():
+            return {"ok": False, "error": f"La carpeta de «{nombre}» no existe: {ruta}"}
+        item: dict = {"ruta": ruta}
+        for k in ("dev", "test"):
+            txt = str(p.get(k, "")).strip()
+            if txt:
+                try:
+                    item[k] = shlex.split(txt)
+                except ValueError:
+                    return {"ok": False, "error": f"El comando {k} de «{nombre}» tiene comillas sin cerrar."}
+        reg[nombre] = item
+    comun.escribir_json(rutas.PROYECTOS, reg)
+    return {"ok": True, "projects": leer_proyectos()}
+
+
+def elegir_carpeta() -> str | None:
+    r = subprocess.run(["osascript", "-e", 'POSIX path of (choose folder with prompt "Carpeta del proyecto")'],
+                       capture_output=True, text=True, timeout=300)
+    return r.stdout.strip().rstrip("/") or None if r.returncode == 0 else None
+
+
+def listar_atajos_mac() -> list[str]:
+    try:
+        r = subprocess.run(["shortcuts", "list"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return sorted({l.strip() for l in r.stdout.splitlines() if l.strip()}, key=str.lower)
+
+
+def guardar_atajos(lista: list) -> dict:
+    out = {}
+    for a in lista or []:
+        nombre = _limpio(a.get("name", ""))[:120]
+        if nombre:
+            out[nombre] = {"modo": "lectura" if a.get("mode") == "lectura" else "escritura"}
+    comun.escribir_json(rutas.ATAJOS, out)
+    return out
 
 
 def leer_busquedas(limit: int = 20) -> list[dict]:
@@ -691,13 +912,86 @@ class Api:
             # pasa por el estado de AVFoundation): eso manda cuando lo hay.
             "perms": {"mic": "granted" if (vivo and st.get("microfono") is True) else
                       ("denied" if vivo and st.get("microfono") is False else permiso_microfono()),
-                      "acc": permiso_accesibilidad(), "auto": permiso_automatizacion()},
+                      "acc": permiso_accesibilidad(), "auto": permiso_automatizacion(),
+                      "screen": permiso_pantalla() if "pantalla" in comun.paquetes_activos() else None,
+                      "autoDetail": detalle_automatizacion()},
             "usage": leer_uso(),
             "last": (leer_actividad(1)["items"] or [None])[0],
         }
 
     def get_activity(self, limit: int = 40) -> dict:
         return leer_actividad(limit)
+
+    def get_metrics(self) -> dict:
+        return leer_metricas()
+
+    def clear_history(self) -> bool:
+        borrar_historial()
+        return True
+
+    # ---- paquetes de capacidad (se aplican al reiniciar el cerebro) ----
+    def get_packages(self) -> dict:
+        st = _leer_json(STATUS_FILE, {})
+        return {"packages": leer_paquetes(), "running": st.get("paquetes")}
+
+    def save_packages(self, ids: list) -> list:
+        return guardar_paquetes(ids or [])
+
+    # ---- proyectos (paquete Desarrollo) ----
+    def get_projects(self) -> list:
+        return leer_proyectos()
+
+    def save_projects(self, lista: list) -> dict:
+        return guardar_proyectos(lista)
+
+    def pick_folder(self) -> str | None:
+        return elegir_carpeta()
+
+    # ---- atajos de Apple ----
+    def get_shortcuts(self) -> dict:
+        permitidos = comun.leer_json(rutas.ATAJOS, {})
+        return {"all": listar_atajos_mac(),
+                "allowed": [{"name": k, "mode": (v or {}).get("modo", "escritura")} for k, v in permitidos.items()]}
+
+    def save_shortcuts(self, lista: list) -> dict:
+        return guardar_atajos(lista)
+
+    # ---- memoria y avisos programados ----
+    def get_memory(self) -> dict:
+        mem = [m for m in comun.leer_json(rutas.MEMORIA, []) if isinstance(m, dict) and m.get("texto")]
+        avisos = [a for a in comun.leer_json(rutas.AVISOS_PROGRAMADOS, []) if isinstance(a, dict)]
+        return {"memory": [{"id": m.get("id", ""), "text": m["texto"], "ts": m.get("ts")} for m in mem],
+                "reminders": sorted([{"id": a.get("id", ""), "text": a.get("texto", ""), "ts": a.get("ts")} for a in avisos],
+                                    key=lambda a: a["ts"] or 0)}
+
+    def get_apple_reminders(self) -> dict:
+        """Pendientes de la app Recordatorios («recuérdame…» va ahí, no a la memoria)."""
+        import acciones_mcp
+        rs = acciones_mcp.recordatorios_pendientes()
+        if isinstance(rs, str):
+            return {"ok": False, "error": rs, "items": []}
+        out = []
+        for r in rs:
+            try:
+                ts = datetime.fromisoformat(r["fecha"]).timestamp() if r["fecha"] else None
+            except ValueError:
+                ts = None
+            out.append({"id": f"{r['titulo']}|{r['fecha']}", "text": r["titulo"], "ts": ts, "list": r["lista"]})
+        return {"ok": True, "items": out}
+
+    def open_reminders_app(self) -> bool:
+        subprocess.Popen(["open", "-a", "Reminders"])
+        return True
+
+    def delete_memory(self, ident: str) -> dict:
+        mem = [m for m in comun.leer_json(rutas.MEMORIA, []) if isinstance(m, dict) and m.get("id") != ident]
+        comun.escribir_json(rutas.MEMORIA, mem, privado=True)
+        return self.get_memory()
+
+    def delete_reminder(self, ident: str) -> dict:
+        lista = [a for a in comun.leer_json(rutas.AVISOS_PROGRAMADOS, []) if isinstance(a, dict) and a.get("id") != ident]
+        comun.escribir_json(rutas.AVISOS_PROGRAMADOS, lista, privado=True)
+        return self.get_memory()
 
     def get_searches(self) -> list:
         return leer_busquedas()
@@ -733,8 +1027,10 @@ class Api:
             if name == "acc":
                 permiso_accesibilidad(preguntar=True)  # añade Jarvis a la lista
             if name == "auto":
-                for b in AUTOMATIZA:                   # pide permiso a las apps abiertas
+                for b in automatiza():                 # pide permiso a las apps abiertas
                     _automatizar(b, preguntar=True)
+            if name == "screen":
+                permiso_pantalla(preguntar=True)
             subprocess.Popen(["open", f"x-apple.systempreferences:com.apple.preference.security?{PANELES.get(name, '')}"])
         threading.Thread(target=run, daemon=True).start()
         return True
@@ -987,9 +1283,13 @@ class Aplicacion:
     # ---- ciclo de vida ----
     def vigilar(self):
         ultimo_vivo = None
+        ultima_retencion = 0.0
         while not self.saliendo:
             time.sleep(0.5)
             try:
+                if time.time() - ultima_retencion > 3600:
+                    ultima_retencion = time.time()
+                    aplicar_retencion()
                 self.motor.vigilar()
                 vivo = self.motor.en_marcha()
                 if vivo != ultimo_vivo:
@@ -1065,6 +1365,11 @@ def main() -> None:
     if not AJUSTES_HTML.exists():
         log.error("falta %s: ejecuta `npm run build` en interfaz/ajustes/", AJUSTES_HTML)
     os.environ["PATH"] = _path_con_claude()
+    comun.preparar_avisos()                         # data/avisos/ solo para el usuario (0700)
+    try:
+        migrar_secretos()                           # SPOTIFY_CLIENT_SECRET: .env → Llavero
+    except Exception:
+        log.exception("migrar secretos")
     # Abierta a mano (Finder, Spotlight): enseña los ajustes. Al iniciar sesión, no.
     por_launchd = os.environ.get("XPC_SERVICE_NAME") == LABEL
     Aplicacion().arrancar(abrir=not por_launchd and "--sin-ventana" not in sys.argv)

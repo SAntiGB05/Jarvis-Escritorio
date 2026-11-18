@@ -1,0 +1,13 @@
+{
+  "id": "pantalla",
+  "nombre": "¿Qué hay en mi pantalla?",
+  "descripcion": "Captura la pantalla y la describe. Requiere Grabación de pantalla",
+  "riesgo": "lectura",
+  "por_defecto": false,
+  "herramientas": ["que_hay_en_pantalla"],
+  "escritura": [],
+  "confirmacion": [],
+  "no_confiables": ["que_hay_en_pantalla"],
+  "permisos_macos": ["screen"],
+  "dominios": []
+}

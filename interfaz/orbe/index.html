@@ -165,7 +165,7 @@ float snoise(vec3 v){
 const vertexShader = /* glsl */`
 uniform float uTime, uSpinPhase, uSwirlPhase, uNoisePhase;
 uniform float uAmp, uAudio, uError, uListen, uScale, uSize, uPixelRatio;
-uniform float uDoneT, uDoneAmt, uBright, uBlue;
+uniform float uDoneT, uDoneAmt, uBright, uBlue, uConfirm;
 uniform vec3 uDeep, uMid, uPale, uDDeep, uDMid, uDPale;
 attribute vec3 aU, aV;
 attribute vec4 aArc, aRand;
@@ -256,6 +256,8 @@ void main(){
   col = mix(col, blue, uBlue);
   col = mix(col, mix(pale, bPale, uBlue), isCore * 0.3 + runner * 0.6);
   col = mix(col, vec3(1.0, 0.03, 0.01), uError);
+  // confirmar (acción de riesgo): ámbar que late despacio
+  col = mix(col, mix(vec3(1.0, 0.55, 0.0), vec3(1.0, 0.78, 0.25), 0.5 + 0.5 * sin(uTime * 3.2)), uConfirm * 0.9);
   col = mix(col, mix(mix(pale, vec3(1.0), 0.5), mix(bPale, vec3(1.0), 0.3), uBlue), clamp(shock * 0.6, 0.0, 0.6));
   vColor = col;
 
@@ -310,7 +312,7 @@ const uniforms = {
   uTime: { value: 0 }, uSpinPhase: { value: 0 }, uSwirlPhase: { value: 0 }, uNoisePhase: { value: 0 },
   uAmp: { value: 0.04 }, uAudio: { value: 0 }, uError: { value: 0 }, uListen: { value: 0 },
   uScale: { value: 1 }, uSize: { value: 15 }, uPixelRatio: { value: DPR },
-  uDoneT: { value: 10 }, uDoneAmt: { value: 0 }, uBright: { value: 1 }, uBlue: { value: 0 },
+  uDoneT: { value: 10 }, uDoneAmt: { value: 0 }, uBright: { value: 1 }, uBlue: { value: 0 }, uConfirm: { value: 0 },
   uDeep: { value: new THREE.Vector3() }, uMid: { value: new THREE.Vector3() }, uPale: { value: new THREE.Vector3() },
   uDDeep: { value: new THREE.Vector3() }, uDMid: { value: new THREE.Vector3() }, uDPale: { value: new THREE.Vector3() },
 };
@@ -383,12 +385,13 @@ composer.addPass(new ShaderPass({
 }));
 
 const STATES = {
-  idle:      { label: 'En espera',  amp: 0.035, spin: 0.25, swirl: 0.10, noise: 0.25, bright: 0.9,  scale: 1.00, listen: 0, error: 0, bloom: 1.0, blue: 0 },
-  listening: { label: 'Escuchando', amp: 0.025, spin: 0.15, swirl: 0.05, noise: 0.35, bright: 1.05, scale: 0.93, listen: 1, error: 0, bloom: 1.15, blue: 0 },
-  thinking:  { label: 'Pensando',   amp: 0.07,  spin: 2.30, swirl: 1.70, noise: 1.10, bright: 1.15, scale: 0.97, listen: 0, error: 0, bloom: 1.3, blue: 0 },
-  speaking:  { label: 'Hablando',   amp: 0.06,  spin: 0.75, swirl: 0.35, noise: 0.80, bright: 1.1,  scale: 1.00, listen: 0, error: 0, bloom: 1.25, blue: 0 },
-  error:     { label: 'Error',      amp: 0.11,  spin: 0.08, swirl: 0.00, noise: 1.60, bright: 0.95, scale: 1.02, listen: 0, error: 1, bloom: 1.25, blue: 0 },
-  done:      { label: 'Completado', amp: 0.03,  spin: 0.45, swirl: 0.15, noise: 0.30, bright: 0.95, scale: 1.00, listen: 0, error: 0, bloom: 1.1, blue: 1 },
+  idle:      { label: 'En espera',  amp: 0.035, spin: 0.25, swirl: 0.10, noise: 0.25, bright: 0.9,  scale: 1.00, listen: 0, error: 0, bloom: 1.0, blue: 0, confirm: 0 },
+  listening: { label: 'Escuchando', amp: 0.025, spin: 0.15, swirl: 0.05, noise: 0.35, bright: 1.05, scale: 0.93, listen: 1, error: 0, bloom: 1.15, blue: 0, confirm: 0 },
+  thinking:  { label: 'Pensando',   amp: 0.07,  spin: 2.30, swirl: 1.70, noise: 1.10, bright: 1.15, scale: 0.97, listen: 0, error: 0, bloom: 1.3, blue: 0, confirm: 0 },
+  speaking:  { label: 'Hablando',   amp: 0.06,  spin: 0.75, swirl: 0.35, noise: 0.80, bright: 1.1,  scale: 1.00, listen: 0, error: 0, bloom: 1.25, blue: 0, confirm: 0 },
+  error:     { label: 'Error',      amp: 0.11,  spin: 0.08, swirl: 0.00, noise: 1.60, bright: 0.95, scale: 1.02, listen: 0, error: 1, bloom: 1.25, blue: 0, confirm: 0 },
+  done:      { label: 'Completado', amp: 0.03,  spin: 0.45, swirl: 0.15, noise: 0.30, bright: 0.95, scale: 1.00, listen: 0, error: 0, bloom: 1.1, blue: 1, confirm: 0 },
+  confirm:   { label: 'Confirmar',  amp: 0.045, spin: 0.35, swirl: 0.12, noise: 0.40, bright: 1.15, scale: 1.04, listen: 0, error: 0, bloom: 1.35, blue: 0, confirm: 1 },
 };
 const cur = { ...STATES.idle };
 let state = 'idle';
@@ -415,7 +418,7 @@ function tick() {
   const t = clock.elapsedTime;
   const target = STATES[state];
   const k = 1 - Math.exp(-dt * 3.0), kf = 1 - Math.exp(-dt * 5.0);
-  for (const key of ['amp','spin','swirl','noise','bright','scale','listen','error','bloom','blue'])
+  for (const key of ['amp','spin','swirl','noise','bright','scale','listen','error','bloom','blue','confirm'])
     cur[key] += (target[key] - cur[key]) * (key === 'error' || key === 'blue' ? kf : k);
   const stutter = cur.error > 0.5 ? (Math.sin(t * 9) > 0.3 ? 1 : -0.4) : 1;
   uniforms.uSpinPhase.value += dt * cur.spin * stutter * cfg.speed;
@@ -434,6 +437,7 @@ function tick() {
   uniforms.uListen.value = cur.listen;
   uniforms.uError.value = cur.error;
   uniforms.uBlue.value = cur.blue;
+  uniforms.uConfirm.value = cur.confirm;
   uniforms.uDoneT.value += dt;
   uniforms.uDoneAmt.value *= Math.exp(-dt * 0.9);
   bloom.strength = (0.35 * cur.bloom + audioSmooth * 0.3 + uniforms.uDoneAmt.value * 0.2) * Math.min(1.4, cfg.glow);

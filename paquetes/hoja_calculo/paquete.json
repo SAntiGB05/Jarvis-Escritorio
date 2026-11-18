@@ -1,0 +1,13 @@
+{
+  "id": "hoja_calculo",
+  "nombre": "Dictado a hoja de cálculo",
+  "descripcion": "Añade filas dictadas (inventario, gastos) a Numbers o Excel",
+  "riesgo": "escritura",
+  "por_defecto": false,
+  "herramientas": ["agregar_fila"],
+  "escritura": ["agregar_fila"],
+  "confirmacion": [],
+  "no_confiables": [],
+  "permisos_macos": ["automation:com.apple.iWork.Numbers"],
+  "dominios": []
+}

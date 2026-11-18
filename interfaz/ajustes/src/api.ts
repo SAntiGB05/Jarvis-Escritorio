@@ -5,6 +5,7 @@ export type Env = {
   assistantName: string; wakeWord: string; userName: string; persona: string; brain: string;
   voice: string; rate: number; pitch: number; whisper: string; lang: string; sens: number;
   city: string; lat: string; lon: string; spId: string; spSecret: string;
+  fastpath: string; briefing: string; quiet: string; retention: number;
 };
 export type Orb = {
   palette: string; size: number; count: number; speed: number; glow: number; turb: number;
@@ -13,11 +14,21 @@ export type Orb = {
 export type SiteGroup = { g: string; items: string[] };
 export type Perm = 'granted' | 'pending' | 'denied' | 'unknown';
 export type Usage = { key: string; label: string; pct: number | null; resetsAt: number | null; status?: string };
-export type Activity = { ts: number; you: string; reply: string; tools: string[]; ok: boolean };
+export type Activity = { ts: number; you: string; reply: string; tools: string[]; ok: boolean;
+  ms?: Record<string, number>; unresolved?: boolean; reason?: string | null; fast?: boolean };
+export type Metrics = {
+  phases: Record<string, { avg: number; p50: number; n: number }>; count: number; fast: number; errors: number;
+  unresolved: { reason: string; count: number; last: number; examples: string[] }[];
+};
+export type Package = { id: string; name: string; desc: string; risk: string; tools: string[]; write: string[]; confirm: string[];
+  untrusted: string[]; perms: string[]; note: string; default: boolean; active: boolean };
+export type Project = { name: string; path: string; exists?: boolean; dev: string; test: string };
+export type Shortcut = { name: string; mode: 'lectura' | 'escritura' };
+export type MemoryItem = { id: string; text: string; ts: number | null };
 export type Status = {
   service: { running: boolean; restarting: boolean; since: number | null; autostart: boolean;
     brain: string | null; model?: string; error?: string | null };
-  perms: { mic: Perm; acc: Perm; auto: Perm };
+  perms: { mic: Perm; acc: Perm; auto: Perm; screen?: Perm | null; autoDetail?: { app: string; id: string; state: Perm }[] };
   usage: Usage[];
   last: Activity | null;
 };
@@ -45,6 +56,20 @@ export interface Api {
   mic_start(): Promise<boolean>;
   mic_level(): Promise<{ level: number; noise: number; live: boolean }>;
   mic_stop(): Promise<boolean>;
+  get_metrics(): Promise<Metrics>;
+  clear_history(): Promise<boolean>;
+  get_packages(): Promise<{ packages: Package[]; running: string[] | null }>;
+  save_packages(ids: string[]): Promise<Package[]>;
+  get_projects(): Promise<Project[]>;
+  save_projects(list: Project[]): Promise<{ ok: boolean; error?: string; projects?: Project[] }>;
+  pick_folder(): Promise<string | null>;
+  get_shortcuts(): Promise<{ all: string[]; allowed: Shortcut[] }>;
+  save_shortcuts(list: Shortcut[]): Promise<Record<string, { modo: string }>>;
+  get_memory(): Promise<{ memory: MemoryItem[]; reminders: MemoryItem[] }>;
+  delete_memory(id: string): Promise<{ memory: MemoryItem[]; reminders: MemoryItem[] }>;
+  delete_reminder(id: string): Promise<{ memory: MemoryItem[]; reminders: MemoryItem[] }>;
+  get_apple_reminders(): Promise<{ ok: boolean; error?: string; items: (MemoryItem & { list?: string })[] }>;
+  open_reminders_app(): Promise<boolean>;
 }
 
 declare global {
@@ -70,6 +95,14 @@ function simulador(): Api {
     { ts: now - 2300, you: 'Pon algo de Soda Stereo', reply: 'Reproduciendo Soda Stereo. Excelente elección, si me permite.', tools: ['spotify_reproducir'], ok: true },
     { ts: now - 90000, you: '¿Quién pintó La Gioconda?', reply: 'Leonardo da Vinci, según Wikipedia.', tools: ['buscar_wikipedia'], ok: true },
   ];
+  let pkgs: Package[] = [
+    { id: 'desarrollo', name: 'Desarrollo', desc: 'Proyectos, git, puertos, tests y delegación a Claude Code', risk: 'escritura', tools: ['auditar_dependencias', 'delegar_a_claude_code', 'puerto_en_uso', 'liberar_puerto'], write: ['delegar_a_claude_code', 'liberar_puerto'], confirm: ['delegar_a_claude_code', 'liberar_puerto'], untrusted: [], perms: ['automation:com.apple.Terminal'], note: '', default: true, active: true },
+    { id: 'portapapeles', name: 'Portapapeles', desc: 'Lee lo que copiaste', risk: 'lectura', tools: ['leer_portapapeles'], write: [], confirm: [], untrusted: ['leer_portapapeles'], perms: [], note: '', default: true, active: true },
+    { id: 'pantalla', name: '¿Qué hay en mi pantalla?', desc: 'Captura la pantalla y la describe', risk: 'lectura', tools: ['que_hay_en_pantalla'], write: [], confirm: [], untrusted: ['que_hay_en_pantalla'], perms: ['screen'], note: '', default: false, active: false },
+  ];
+  let projects: Project[] = [{ name: 'catalogo', path: '~/Developer/catalogo', exists: true, dev: 'npm run dev', test: 'npm test -- --reporter=json' }];
+  let shortcuts: Shortcut[] = [{ name: 'Luces del estudio', mode: 'escritura' }];
+  let memory: MemoryItem[] = [{ id: 'a1', text: 'Prefiere el café sin azúcar', ts: now - 86400 }];
   const match = (host: string) => {
     for (const g of sites) for (const r of g.items)
       if (r.startsWith('*.') ? host.endsWith(r.slice(1)) : host === r || host.endsWith('.' + r)) return r;
@@ -78,9 +111,9 @@ function simulador(): Api {
   return {
     async get_config() {
       return {
-        env: { assistantName: 'Jarvis', wakeWord: 'Raphael', userName: '', persona: 'britanico', brain: 'haiku', voice: 'es-CO-GonzaloNeural', rate: 5, pitch: -4, whisper: 'small', lang: 'es', sens: 2.5, city: 'Armenia, Quindío', lat: '4.5339', lon: '-75.6811', spId: '', spSecret: '' },
+        env: { assistantName: 'Jarvis', wakeWord: 'Raphael', userName: '', persona: 'britanico', brain: 'haiku', voice: 'es-CO-GonzaloNeural', rate: 5, pitch: -4, whisper: 'small', lang: 'es', sens: 2.5, city: 'Armenia, Quindío', lat: '4.5339', lon: '-75.6811', spId: '', spSecret: '', fastpath: '1', briefing: '0', quiet: '', retention: 30 },
         orb: { palette: 'dorado', size: 1, count: 1600, speed: 1, glow: 1, turb: 1, corner: 'tr', sound: true, dblclick: true, drag: true },
-        sites, theme: 'oscuro', version: '1.0',
+        sites, theme: 'oscuro', version: '1.1',
       };
     },
     async save_env(env) { return { ok: true, env }; },
@@ -126,6 +159,24 @@ function simulador(): Api {
       return { level: 250 + Math.random() * 200 + burst * (1400 + Math.random() * 1800), noise: 220, live: true };
     },
     async mic_stop() { return true; },
+    async get_metrics() {
+      return { phases: { whisper: { avg: 640, p50: 610, n: 40 }, primer_token: { avg: 1480, p50: 1400, n: 38 }, claude_total: { avg: 2950, p50: 2700, n: 38 },
+        tts_primer_audio: { avg: 390, p50: 360, n: 38 }, primer_audio: { avg: 1950, p50: 1800, n: 38 }, total: { avg: 120, p50: 90, n: 12 } },
+        count: 52, fast: 12, errors: 2, unresolved: [{ reason: 'leer correos', count: 3, last: now - 4000, examples: ['¿Tengo correos nuevos?'] }] };
+    },
+    async clear_history() { return true; },
+    async get_packages() { return { packages: pkgs, running: pkgs.filter(p => p.active).map(p => p.id) }; },
+    async save_packages(ids) { pkgs = pkgs.map(p => ({ ...p, active: ids.includes(p.id) })); return pkgs; },
+    async get_projects() { return projects; },
+    async save_projects(l) { projects = l; return { ok: true, projects: l }; },
+    async pick_folder() { return '/Users/demo/Developer/catalogo'; },
+    async get_shortcuts() { return { all: ['Luces del estudio', 'Modo trabajo', 'Clima detallado'], allowed: shortcuts }; },
+    async save_shortcuts(l) { shortcuts = l; return {}; },
+    async get_memory() { return { memory, reminders: [] }; },
+    async delete_memory(id) { memory = memory.filter(m => m.id !== id); return { memory, reminders: [] }; },
+    async delete_reminder() { return { memory, reminders: [] }; },
+    async get_apple_reminders() { return { ok: true, items: [{ id: 'r1', text: 'Llamar al banco', ts: now + 7200, list: 'Recordatorios' }] }; },
+    async open_reminders_app() { return true; },
   };
 }
 

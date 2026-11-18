@@ -1,7 +1,8 @@
 import { createContext, useContext } from 'react';
 import type { Api, Env, Orb, SiteGroup, Status } from './api';
 
-export type Page = 'inicio' | 'orbe' | 'identidad' | 'voz' | 'capacidades' | 'internet' | 'actividad' | 'sistema';
+export type Page = 'inicio' | 'orbe' | 'identidad' | 'voz' | 'paquetes' | 'proyectos' | 'atajos' | 'memoria'
+  | 'internet' | 'actividad' | 'sistema' | 'funciones';
 
 export type Store = {
   api: Api;

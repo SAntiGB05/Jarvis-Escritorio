@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Activity, UrlTest } from './api';
+import type { Activity, Metrics, UrlTest } from './api';
 import { serviceInfo } from './App';
 import { permView } from './pagesA';
 import { dayTime, searchDate, useStore } from './store';
@@ -7,30 +7,22 @@ import { GOLD, MONO } from './theme';
 import { Card, Dot, Eyebrow, PageHead, Pill, PrimaryBtn, SecondaryBtn, Toggle, inputStyle, useT } from './ui';
 
 // ---------------------------------------------------------------------------
-// 5. Capacidades
+// Servicios conectados (Spotify y clima) — se muestran en Paquetes
 // ---------------------------------------------------------------------------
 
-export function Capacidades() {
+export function Servicios() {
   const T = useT();
   const s = useStore();
   const { env, status } = s;
   const [showSecret, setShowSecret] = useState(false);
   const perms = status?.perms;
   const spMode = env.spId && env.spSecret ? 1 : perms?.acc === 'granted' ? 2 : 3;
-  const autoOk = !perms || perms.auto === 'granted' || perms.auto === 'unknown';
   const modes: [number, string][] = [[1, 'Con API de Spotify: resultado exacto'], [2, 'Con Accesibilidad: pulsa «Reproducir» por ti'], [3, 'Solo abre la búsqueda; tú pulsas play']];
-  const caps = [
-    { title: 'Aplicaciones', desc: 'Abre y cierra apps instaladas, aunque digas el nombre aproximado.', example: '«Abre CapCut» · «Cierra Safari»', ok: autoOk },
-    { title: 'Recordatorios', desc: 'Crea recordatorios con aviso y lee tus pendientes.', example: '«Recuérdame llamar a mamá en 20 min»', ok: autoOk },
-    { title: 'Sistema', desc: 'Ajusta el volumen del Mac y te dice la fecha y la hora.', example: '«Pon el volumen al 40»', ok: true },
-    { title: 'Conocimiento', desc: 'Wikipedia y páginas de sitios permitidos. Siempre cita la fuente.', example: '«¿Quién pintó La Gioconda?»', ok: true },
-  ];
   const mono = inputStyle(T, true);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 920 }}>
-      <PageHead eyebrow="CAPACIDADES" title={`Lo que ${env.assistantName} puede hacer`} />
-
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <Eyebrow>SERVICIOS CONECTADOS · SE APLICA AL REINICIAR</Eyebrow>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
         <Card style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -69,26 +61,6 @@ export function Capacidades() {
         </Card>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(210px,1fr))', gap: 14 }}>
-        {caps.map(c => (
-          <Card key={c.title} style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{c.title}</div><Pill ok={c.ok} okText="Disponible" noText="Necesita permiso" />
-            </div>
-            <div style={{ fontSize: 12.5, color: T.tx3, lineHeight: 1.45 }}>{c.desc}</div>
-            <div style={{ fontFamily: MONO, fontSize: 11, color: T.tx2, marginTop: 'auto' }}>{c.example}</div>
-          </Card>
-        ))}
-      </div>
-
-      <div style={{ borderRadius: 14, border: `1px dashed rgba(${T.ln},0.14)`, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <Eyebrow>LÍMITES DE SEGURIDAD</Eyebrow>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 10, fontSize: 12.5, color: T.tx2 }}>
-          <div>Sin acceso a archivos ni terminal. No edita nada.</div>
-          <div>No navega fuera de los sitios permitidos.</div>
-          <div>Ignora instrucciones escritas dentro de páginas web.</div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -99,6 +71,17 @@ export function Capacidades() {
 
 const DOMAIN_RE = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/;
 
+// Punto 4: dominios donde terceros publican o reciben datos (canal de exfiltración).
+const RIESGO: [RegExp, string][] = [
+  [/(^|\.)(bit\.ly|tinyurl\.com|t\.co|goo\.gl|ow\.ly|is\.gd|cutt\.ly|rebrand\.ly|shorturl\.at|lnkd\.in)$/, 'un acortador de enlaces'],
+  [/(^|\.)(forms\.gle|docs\.google\.com|forms\.office\.com|typeform\.com|jotform\.com|surveymonkey\.com|tally\.so|formspree\.io)$/, 'un servicio de formularios'],
+  [/(^|\.)(pastebin\.com|gist\.github\.com|githubusercontent\.com|hastebin\.com|ghostbin\.\w+|paste\.ee|dpaste\.\w+|rentry\.co|justpaste\.it|controlc\.com)$/, 'un sitio para pegar texto'],
+  [/(^|\.)(webhook\.site|requestbin\.\w+|pipedream\.net|ngrok\.io|ngrok-free\.app|beeceptor\.com|hookbin\.com|trycloudflare\.com)$/, 'un receptor de peticiones'],
+  [/(^|\.)(dropbox\.com|drive\.google\.com|wetransfer\.com|mega\.nz|file\.io|transfer\.sh)$/, 'un almacenamiento de archivos'],
+];
+const riesgo = (d: string) => RIESGO.find(([re]) => re.test(d.replace(/^\*\./, '')))?.[1];
+const ABIERTOS = new Set(['*.com', '*.org', '*.net', '*.io', '*.co', '*.app', '*.dev']);
+
 export function Internet() {
   const T = useT();
   const s = useStore();
@@ -106,6 +89,7 @@ export function Internet() {
   const [res, setRes] = useState<UrlTest>({ state: 'empty' });
   const [newSite, setNewSite] = useState('');
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [searches, setSearches] = useState<{ when: string; q: string }[]>([]);
 
   useEffect(() => { s.api.get_searches().then(setSearches).catch(() => {}); }, [s.api]);
@@ -127,6 +111,13 @@ export function Internet() {
     if (!v) return;
     if (!DOMAIN_RE.test(v) || (!v.startsWith('*.') && !v.includes('.'))) { setMsg({ ok: false, text: 'Formato no válido. Usa dominio.com o *.terminacion' }); return; }
     if (s.sites.some(g => g.items.includes(v))) { setMsg({ ok: false, text: 'Ese dominio ya está en la lista.' }); return; }
+    const r = ABIERTOS.has(v) ? 'una terminación abierta a cualquiera' : riesgo(v);
+    if (r && aviso !== v) {
+      setAviso(v);
+      setMsg({ ok: false, text: `Cuidado: «${v}» es ${r}. Ahí terceros publican o reciben datos y una página podría usarlo para sacar tu información. Pulsa Añadir otra vez para confirmar.` });
+      return;
+    }
+    setAviso(null);
     const groups = s.sites.map(g => ({ ...g, items: [...g.items] }));
     let cg = groups.find(g => g.g === 'Personalizados');
     if (!cg) { cg = { g: 'Personalizados', items: [] }; groups.push(cg); }
@@ -141,7 +132,7 @@ export function Internet() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 820 }}>
       <PageHead eyebrow="INTERNET · SE APLICA AL INSTANTE" title="Sitios permitidos"
-        sub="Solo HTTPS. «dominio.com» incluye sus subdominios; «*.gov» cualquier dominio que termine así." />
+        sub="Solo HTTPS. «dominio.com» incluye sus subdominios; «*.gov» cualquier dominio que termine así. Añade solo sitios de lectura: nunca acortadores, formularios ni sitios donde terceros publican texto." />
 
       <Card style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 18 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -155,7 +146,7 @@ export function Internet() {
           <Eyebrow>AÑADIR DOMINIO</Eyebrow>
           <div style={{ display: 'flex', gap: 6 }}>
             <input className="field" value={newSite} placeholder="ejemplo.org o *.gob.ec" spellCheck={false}
-              onChange={e => { setNewSite(e.target.value); setMsg(null); }} onKeyDown={e => { if (e.key === 'Enter') addSite(); }} style={mono} />
+              onChange={e => { setNewSite(e.target.value); setMsg(null); setAviso(null); }} onKeyDown={e => { if (e.key === 'Enter') addSite(); }} style={mono} />
             <PrimaryBtn onClick={addSite} style={{ padding: '0 14px', fontSize: 12.5 }}>Añadir</PrimaryBtn>
           </div>
           <div style={{ fontSize: 12, color: msg ? (msg.ok ? T.blue : T.red) : T.tx4 }}>{msg ? msg.text : 'Se guarda en sitios_permitidos.txt.'}</div>
@@ -201,18 +192,74 @@ export function Internet() {
 // 7. Actividad
 // ---------------------------------------------------------------------------
 
+const FASES: [string, string][] = [['whisper', 'Transcripción'], ['primer_token', 'Primer token'], ['claude_total', 'Claude total'],
+  ['tts_primer_audio', 'Síntesis 1.ª frase'], ['primer_audio', 'Hasta oír la respuesta'], ['total', 'Respuesta rápida']];
+const seg = (ms?: number) => ms === undefined ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`;
+
 export function Actividad() {
   const T = useT();
   const s = useStore();
   const [data, setData] = useState<{ items: Activity[]; days: { day: number; date: string; count: number }[] } | null>(null);
-  useEffect(() => { s.api.get_activity(60).then(setData).catch(() => {}); }, [s.api, s.status?.last?.ts]);
+  const [met, setMet] = useState<Metrics | null>(null);
+  const [borrar, setBorrar] = useState(false);
+  const cargar = () => { s.api.get_activity(60).then(setData).catch(() => {}); s.api.get_metrics().then(setMet).catch(() => {}); };
+  useEffect(cargar, [s.api, s.status?.last?.ts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const limpiar = async () => {
+    if (!borrar) { setBorrar(true); window.setTimeout(() => setBorrar(false), 4000); return; }
+    setBorrar(false); await s.api.clear_history(); cargar();
+  };
   const days = data?.days || [];
   const mx = Math.max(1, ...days.map(d => d.count));
   const total = days.reduce((a, b) => a + b.count, 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 820 }}>
-      <PageHead eyebrow="ACTIVIDAD" title="Conversaciones recientes" />
+      <PageHead eyebrow="ACTIVIDAD" title="Conversaciones recientes"
+        right={<SecondaryBtn onClick={limpiar} style={borrar ? { color: T.red, borderColor: 'rgba(255,74,61,0.4)' } : undefined}>{borrar ? '¿Seguro? Pulsa otra vez' : 'Borrar historial'}</SecondaryBtn>} />
+
+      <Card style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Eyebrow>LATENCIA MEDIA POR FASE · ÚLTIMAS 200</Eyebrow>
+          {met && <div style={{ fontFamily: MONO, fontSize: 11, color: T.tx3 }}>{met.fast} de {met.count} sin Claude · {met.errors} con error</div>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10 }}>
+          {FASES.map(([k, label]) => (
+            <div key={k} style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '10px 12px', borderRadius: 9, background: `rgba(${T.sf},0.03)`, border: `1px solid rgba(${T.ln},0.06)` }}>
+              <div style={{ fontSize: 11.5, color: T.tx3 }}>{label}</div>
+              <div style={{ fontSize: 17, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: k === 'primer_audio' ? T.acc : T.tx }}>{seg(met?.phases[k]?.avg)}</div>
+              <div style={{ fontFamily: MONO, fontSize: 10, color: T.tx4 }}>{met?.phases[k] ? `mediana ${seg(met.phases[k].p50)} · n=${met.phases[k].n}` : 'sin datos aún'}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <Eyebrow>LO QUE {s.env.assistantName.toUpperCase()} NO PUDO HACER</Eyebrow>
+        <div style={{ fontSize: 12, color: T.tx3 }}>Agrupado por motivo: te dice qué herramienta conviene construir a continuación.</div>
+        {met && !met.unresolved.length && <div style={{ fontSize: 12.5, color: T.tx3, padding: '6px 0' }}>Nada por ahora.</div>}
+        {met?.unresolved.map(u => (
+          <div key={u.reason} style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) 80px', gap: 12, alignItems: 'baseline', padding: '9px 0', borderTop: `1px solid rgba(${T.ln},0.06)` }}>
+            <div style={{ fontFamily: MONO, fontSize: 15, color: T.acc }}>{u.count}×</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ fontSize: 13 }}>{u.reason}</div>
+              <div style={{ fontSize: 11.5, color: T.tx4 }}>{u.examples.map(e => `«${e}»`).join(' · ')}</div>
+            </div>
+            <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.tx4, textAlign: 'right' }}>{dayTime(u.last)}</div>
+          </div>
+        ))}
+      </Card>
+
+      <Card style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ fontSize: 13 }}>Conservar el historial</div>
+          <div style={{ fontSize: 11.5, color: T.tx3 }}>Conversaciones, búsquedas y límites más antiguos se borran solos. 0 = sin límite. Se aplica al reiniciar.</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input className="field" type="number" min={0} max={3650} value={s.env.retention}
+            onChange={e => s.setEnv('retention', Math.max(0, Math.min(3650, Math.round(+e.target.value || 0))))} style={inputStyle(T, true, { width: 80 })} />
+          <span style={{ fontSize: 12, color: T.tx3 }}>días</span>
+        </div>
+      </Card>
 
       <Card style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -243,11 +290,14 @@ export function Actividad() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div style={{ fontSize: 13.5, color: T.tx }}>{c.you}</div>
               <div style={{ fontSize: 13.5, color: c.ok ? T.acc : T.red }}>{c.reply}</div>
-              {c.tools.length > 0 && (
+              {(c.tools.length > 0 || c.fast || c.unresolved || c.ms?.primer_audio) && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {c.fast && <span style={{ fontFamily: MONO, fontSize: 10.5, padding: '2px 7px', borderRadius: 4, background: 'rgba(61,139,255,0.12)', color: T.blue }}>rápido · sin Claude</span>}
+                  {c.unresolved && <span style={{ fontFamily: MONO, fontSize: 10.5, padding: '2px 7px', borderRadius: 4, background: 'rgba(255,74,61,0.12)', color: T.red }}>no resuelto{c.reason ? ` · ${c.reason}` : ''}</span>}
                   {c.tools.map((t, j) => (
                     <span key={j} style={{ fontFamily: MONO, fontSize: 10.5, padding: '2px 7px', borderRadius: 4, background: `rgba(${T.sf},0.06)`, color: T.tx3 }}>{t}</span>
                   ))}
+                  {!!c.ms?.primer_audio && <span style={{ fontFamily: MONO, fontSize: 10.5, padding: '2px 7px', color: T.tx4 }}>{seg(c.ms.primer_audio)} hasta oírlo</span>}
                 </div>
               )}
             </div>
@@ -268,11 +318,13 @@ export function Sistema() {
   const { status, env } = s;
   const svc = serviceInfo(status, s.restarting, T.acc);
   const w = env.wakeWord.trim();
+  const detalle = status?.perms.autoDetail || [];
   const rows = [
     ['mic', 'Micrófono', `Para oír «${w}» y tus peticiones.`],
-    ['acc', 'Accesibilidad', 'Para que Spotify reproduzca solo, sin API.'],
-    ['auto', 'Automatización', 'Para controlar Spotify, Recordatorios y System Events.'],
-  ] as const;
+    ['acc', 'Accesibilidad', 'Para que Spotify reproduzca solo y para el brillo.'],
+    ['auto', 'Automatización', `Para controlar ${detalle.length ? detalle.map(d => d.app).join(', ') : 'Spotify, Recordatorios y System Events'}.`],
+    ...(status?.perms.screen ? [['screen', 'Grabación de pantalla', 'Para «¿Qué hay en mi pantalla?» (paquete Pantalla).']] : []),
+  ] as [('mic' | 'acc' | 'auto' | 'screen'), string, string][];
   const open = (k: string) => {
     s.api.open_privacy_pane(k);
     window.setTimeout(s.refreshStatus, 1500);
@@ -285,13 +337,18 @@ export function Sistema() {
 
       <Card style={{ padding: '4px 18px' }}>
         {rows.map(([k, name, desc], i) => {
-          const p = permView(status?.perms[k], T);
+          const p = permView(status?.perms[k] || undefined, T);
           return (
             <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: i < rows.length - 1 ? `1px solid rgba(${T.ln},0.06)` : 'none' }}>
               <Dot color={p.dot} size={9} glow />
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 500 }}>{name}</div>
                 <div style={{ fontSize: 12, color: T.tx3 }}>{desc}</div>
+                {k === 'auto' && detalle.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
+                    {detalle.map(d => <span key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.tx3 }}><Dot color={permView(d.state, T).dot} />{d.app}</span>)}
+                  </div>
+                )}
               </div>
               <div style={{ fontSize: 12, color: p.color, whiteSpace: 'nowrap' }}>{p.text}</div>
               <SecondaryBtn small onClick={() => open(k)}>Abrir Ajustes</SecondaryBtn>
